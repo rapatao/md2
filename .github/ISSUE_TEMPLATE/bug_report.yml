@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem with md2
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug. Please fill in the details below.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command you ran, plus a minimal markdown input if possible.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: Output format(s)
+      placeholder: pdf, html, txt
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output, error, or panic
+      description: Paste any terminal output or stack trace.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: md2 version or commit
+      placeholder: v0.1.0 / commit sha
+  - type: input
+    id: env
+    attributes:
+      label: OS / architecture / Go version
+      placeholder: macOS arm64, go1.26

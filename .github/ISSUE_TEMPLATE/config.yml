@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussions
+    url: https://github.com/rapatao/md2/discussions
+    about: Ask questions, share ideas, or discuss usage here.
