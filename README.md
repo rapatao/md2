@@ -1,5 +1,7 @@
 # md2
 
+[![CI](https://github.com/rapatao/md2/actions/workflows/ci.yml/badge.svg)](https://github.com/rapatao/md2/actions/workflows/ci.yml)
+
 Convert markdown files to other formats. Pure Go by default, extensible to new output formats.
 
 Currently supported:
