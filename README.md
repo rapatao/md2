@@ -117,3 +117,7 @@ internal/converter/
 ```sh
 go test ./...
 ```
+
+## License
+
+[MIT](LICENSE) © rapatao
