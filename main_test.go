@@ -148,6 +148,48 @@ func TestRunFormatFromOutputExt(t *testing.T) {
 	}
 }
 
+// withStdout swaps the package stdout writer for a buffer and restores it.
+func withStdout(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	prev := stdoutWriter
+	buf := &bytes.Buffer{}
+	stdoutWriter = buf
+	t.Cleanup(func() { stdoutWriter = prev })
+	return buf
+}
+
+func TestRunStdout(t *testing.T) {
+	in := writeInput(t)
+	buf := withStdout(t)
+	if err := run([]string{"-f", "html", "-stdout", in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
+		t.Errorf("stdout missing <h1>: %q", buf.Bytes())
+	}
+	// -stdout without -o must not write a file.
+	if _, err := os.Stat(replaceExt(in, ".html")); err == nil {
+		t.Error("no file should be written with -stdout and no -o")
+	}
+}
+
+func TestRunStdoutWithOutput(t *testing.T) {
+	in := writeInput(t)
+	out := filepath.Join(filepath.Dir(in), "custom.html")
+	buf := withStdout(t)
+	if err := run([]string{"-o", out, "-stdout", in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
+		t.Errorf("stdout missing <h1>: %q", buf.Bytes())
+	}
+	// -o alongside -stdout still writes the file, with identical content.
+	data := readFile(t, out)
+	if !bytes.Equal(data, buf.Bytes()) {
+		t.Errorf("file and stdout differ:\nfile=%q\nstdout=%q", data, buf.Bytes())
+	}
+}
+
 func TestRunErrors(t *testing.T) {
 	in := writeInput(t)
 	tests := []struct {
@@ -155,6 +197,7 @@ func TestRunErrors(t *testing.T) {
 		args []string
 	}{
 		{"output conflicts with multiple formats", []string{"-o", "x.pdf", "-f", "pdf,html", in}},
+		{"stdout conflicts with multiple formats", []string{"-stdout", "-f", "pdf,html", in}},
 		{"unsupported format", []string{"-f", "docx", in}},
 		{"no input", []string{}},
 		{"too many inputs", []string{in, in}},
