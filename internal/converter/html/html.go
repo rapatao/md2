@@ -20,6 +20,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
@@ -100,6 +101,9 @@ func (Converter) Convert(src []byte, w io.Writer) error {
 func Render(src []byte) ([]byte, error) {
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
+		// Generate GitHub-style id attributes on headings so in-document links
+		// like [x](#my-section) resolve to the heading.
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRendererOptions(
 			renderer.WithNodeRenderers(util.Prioritized(&mermaidRenderer{}, 10)),
 		),

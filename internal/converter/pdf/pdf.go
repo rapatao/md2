@@ -18,6 +18,7 @@ import (
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 )
 
 // Converter renders markdown source to a PDF document.
@@ -70,6 +71,9 @@ func renderPureGo(src []byte, w io.Writer) (err error) {
 
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
+		// Emit heading id attributes so goldmark-pdf registers internal-link
+		// destinations, making in-document links like [x](#my-section) clickable.
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRenderer(
 			gpdf.New(
 				gpdf.WithContext(ctx),
