@@ -12,6 +12,24 @@ Currently supported:
 
 ## Install
 
+**Homebrew** (macOS):
+
+```sh
+brew install rapatao/tap/md2
+```
+
+**Nix** (flakes):
+
+```sh
+nix run github:rapatao/md2 -- input.md     # run without installing
+nix profile install github:rapatao/md2     # install into your profile
+```
+
+**Prebuilt binaries**: download the archive for your OS/arch from the
+[latest release](https://github.com/rapatao/md2/releases/latest).
+
+**Go**:
+
 ```sh
 go install github.com/rapatao/md2@latest
 ```
@@ -37,6 +55,7 @@ Flags:
 - `-o` output file. Default: input name with the format extension. Cannot be combined with multiple formats.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-allow-download` authorize downloading Chromium for the PDF browser fallback without prompting (useful in CI).
+- `-version` print the version and exit.
 
 ## PDF engine
 
