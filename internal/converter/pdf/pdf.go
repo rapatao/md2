@@ -25,11 +25,30 @@ import (
 type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error {
+	return convertFrom(src, "", w)
+}
+
+// ConvertFrom is Convert with the input file path provided, so the browser
+// fallback can resolve relative image references and embed them in the PDF.
+func (Converter) ConvertFrom(src []byte, srcPath string, w io.Writer) error {
+	return convertFrom(src, srcPath, w)
+}
+
+func convertFrom(src []byte, srcPath string, w io.Writer) error {
+	// browser renders via the headless-browser engine, passing the input path
+	// when known so local images are embedded.
+	browser := func() error {
+		if srcPath != "" {
+			return (chrome.Converter{}).ConvertFrom(src, srcPath, w)
+		}
+		return (chrome.Converter{}).Convert(src, w)
+	}
+
 	// Enabled diagrams (e.g. mermaid) render via client-side JavaScript, which
 	// the pure-Go renderer cannot run. Go straight to the headless browser so
 	// the diagrams appear as SVG rather than raw code.
 	if htmlconv.RequiresBrowser(src) {
-		return (chrome.Converter{}).Convert(src, w)
+		return browser()
 	}
 
 	// Render to a buffer first so a partial pure-Go result is never written
@@ -37,7 +56,7 @@ func (Converter) Convert(src []byte, w io.Writer) error {
 	var buf bytes.Buffer
 	if err := renderPureGo(src, &buf); err != nil {
 		fmt.Fprintf(os.Stderr, "md2: pure-Go PDF failed (%v); trying headless browser...\n", err)
-		if ferr := (chrome.Converter{}).Convert(src, w); ferr != nil {
+		if ferr := browser(); ferr != nil {
 			return fmt.Errorf("pure-Go PDF failed (%v); browser fallback failed: %w", err, ferr)
 		}
 		return nil

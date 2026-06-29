@@ -2,6 +2,8 @@ package html
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -172,5 +174,76 @@ func TestConverterConvert(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte(`<h1 id="hi">Hi</h1>`)) {
 		t.Errorf("Convert output missing heading:\n%s", buf.Bytes())
+	}
+}
+
+// tinyPNG is a valid 1x1 PNG.
+var tinyPNG = []byte{
+	0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a,
+	0, 0, 0, 0x0d, 'I', 'H', 'D', 'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89,
+	0, 0, 0, 0x0a, 'I', 'D', 'A', 'T', 0x78, 0x9c, 0x63, 0, 1, 0, 0, 5, 0, 1, 0x0d, 0x0a, 0x2d, 0xb4,
+	0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82,
+}
+
+func TestInlineLocalImages(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dot.png"), tinyPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := []byte(`<img src="dot.png" alt="x">` +
+		`<img src="https://example.com/a.png">` +
+		`<img src="data:image/png;base64,AAAA">` +
+		`<img src="missing.png">`)
+
+	out := string(inlineLocalImages(doc, dir))
+
+	// Local file becomes a data URI; the original relative ref is gone.
+	if !strings.Contains(out, `src="data:image/png;base64,iVBOR`) {
+		t.Errorf("local image not inlined:\n%s", out)
+	}
+	if strings.Contains(out, `src="dot.png"`) {
+		t.Errorf("relative ref should be replaced:\n%s", out)
+	}
+	// Remote, already-inlined, and unreadable refs are left untouched.
+	if !strings.Contains(out, `src="https://example.com/a.png"`) {
+		t.Errorf("remote ref should be untouched:\n%s", out)
+	}
+	if !strings.Contains(out, `src="data:image/png;base64,AAAA"`) {
+		t.Errorf("existing data URI should be untouched:\n%s", out)
+	}
+	if !strings.Contains(out, `src="missing.png"`) {
+		t.Errorf("unreadable ref should be left as-is:\n%s", out)
+	}
+}
+
+// RenderFrom embeds a local image referenced from the markdown.
+func TestRenderFromEmbedsImage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pic.png"), tinyPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := RenderFrom([]byte("![x](pic.png)\n"), dir)
+	if err != nil {
+		t.Fatalf("RenderFrom: %v", err)
+	}
+	if !strings.Contains(string(out), `src="data:image/png;base64,iVBOR`) {
+		t.Errorf("image not embedded:\n%s", out)
+	}
+	if strings.Contains(string(out), `src="pic.png"`) {
+		t.Errorf("relative ref should be gone:\n%s", out)
+	}
+}
+
+func TestImageMIME(t *testing.T) {
+	cases := map[string]string{
+		"a.png": "image/png", "a.JPG": "image/jpeg", "a.jpeg": "image/jpeg",
+		"a.gif": "image/gif", "a.svg": "image/svg+xml", "a.webp": "image/webp",
+		"a.unknown": "image/png",
+	}
+	for path, want := range cases {
+		if got := imageMIME(path); got != want {
+			t.Errorf("imageMIME(%q) = %q, want %q", path, got, want)
+		}
 	}
 }

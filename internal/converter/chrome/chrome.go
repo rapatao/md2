@@ -7,8 +7,10 @@
 package chrome
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -17,6 +19,13 @@ import (
 
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
+
+// Install the diagram rasterizer into the html package, which the -flatten
+// path uses. html cannot import chrome (chrome imports html), so the hook is
+// wired here instead.
+func init() {
+	htmlconv.Rasterizer = Rasterize
+}
 
 // mermaidTimeout bounds how long we wait for client-side mermaid rendering to
 // finish before printing the PDF anyway.
@@ -31,12 +40,22 @@ var Consent func() (bool, error)
 type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error {
+	return convertFrom(src, ".", w)
+}
+
+// ConvertFrom is Convert with the input file path provided, so relative image
+// references are resolved against its directory and embedded in the PDF.
+func (Converter) ConvertFrom(src []byte, srcPath string, w io.Writer) error {
+	return convertFrom(src, filepath.Dir(srcPath), w)
+}
+
+func convertFrom(src []byte, baseDir string, w io.Writer) error {
 	bin, err := browserPath()
 	if err != nil {
 		return err
 	}
 
-	doc, err := htmlconv.Render(src)
+	doc, err := htmlconv.RenderFrom(src, baseDir)
 	if err != nil {
 		return err
 	}
@@ -95,10 +114,146 @@ func waitMermaid(page *rod.Page) {
 	}
 }
 
+// Rasterize loads a rendered HTML document in a headless browser, lets the
+// inlined mermaid script draw every diagram to SVG, replaces each
+// <pre class="mermaid"> with an <img> holding a PNG snapshot, strips the now-
+// useless scripts, and returns the resulting static, self-contained HTML. It is
+// installed as html.Rasterizer to back the -flatten path.
+func Rasterize(doc []byte) ([]byte, error) {
+	bin, err := browserPath()
+	if err != nil {
+		return nil, err
+	}
+
+	url, err := launcher.New().Bin(bin).Headless(true).Launch()
+	if err != nil {
+		return nil, fmt.Errorf("launch browser: %w", err)
+	}
+
+	browser := rod.New().ControlURL(url)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("connect to browser: %w", err)
+	}
+	defer browser.Close()
+
+	page, err := browser.Page(proto.TargetCreateTarget{})
+	if err != nil {
+		return nil, fmt.Errorf("open page: %w", err)
+	}
+
+	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width: 1280, Height: 1024,
+	}); err != nil {
+		return nil, fmt.Errorf("set viewport: %w", err)
+	}
+	if err := page.SetDocumentContent(string(doc)); err != nil {
+		return nil, fmt.Errorf("set page content: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		return nil, fmt.Errorf("wait for page load: %w", err)
+	}
+
+	// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
+	// before snapshotting so we capture the diagrams, not empty placeholders.
+	waitMermaid(page)
+
+	// Force a white page background so diagram snapshots carry an opaque white
+	// backdrop rather than transparency, keeping them legible wherever they land.
+	if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
+		return nil, fmt.Errorf("set background: %w", err)
+	}
+
+	els, err := page.Elements("pre.mermaid")
+	if err != nil {
+		return nil, fmt.Errorf("find diagrams: %w", err)
+	}
+	for _, el := range els {
+		png, err := snapshotDiagram(page, el)
+		if err != nil {
+			return nil, err
+		}
+		uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+		// Replace the rendered <pre class="mermaid"> with a plain <img>. rod
+		// binds `this` to the element, so the arrow function can act on it.
+		if _, err := el.Eval(`(src) => {
+			const img = document.createElement('img');
+			img.src = src;
+			this.replaceWith(img);
+		}`, uri); err != nil {
+			return nil, fmt.Errorf("inline diagram: %w", err)
+		}
+	}
+
+	// The mermaid library and init script are dead weight in a static document.
+	if _, err := page.Eval(`() => {
+		document.querySelectorAll('script').forEach((s) => s.remove());
+	}`); err != nil {
+		return nil, fmt.Errorf("strip scripts: %w", err)
+	}
+
+	out, err := page.HTML()
+	if err != nil {
+		return nil, fmt.Errorf("read rendered html: %w", err)
+	}
+	return []byte(out), nil
+}
+
+// diagramScale renders diagram snapshots at this device-pixel ratio so the PNGs
+// stay crisp when displayed in the document.
+const diagramScale = 2
+
+// snapshotDiagram captures a single rendered mermaid diagram as a PNG. It
+// measures the diagram's box and captures exactly that region with an explicit
+// clip and CaptureBeyondViewport set, so a diagram larger than the viewport is
+// captured in full — rod's Element.Screenshot grabs only the viewport and then
+// crops, which clips anything off-screen and mishandles a non-unit scale.
+func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
+	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
+	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
+	// not produce an svg (e.g. a diagram with a syntax error).
+	target := pre
+	if svg, err := pre.Element("svg"); err == nil {
+		target = svg
+	}
+
+	res, err := target.Eval(`() => {
+		const r = this.getBoundingClientRect();
+		return {x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height};
+	}`)
+	if err != nil {
+		return nil, fmt.Errorf("measure diagram: %w", err)
+	}
+	box := res.Value
+
+	png, err := page.Screenshot(false, &proto.PageCaptureScreenshot{
+		Format:                proto.PageCaptureScreenshotFormatPng,
+		CaptureBeyondViewport: true,
+		Clip: &proto.PageViewport{
+			X:      box.Get("x").Num(),
+			Y:      box.Get("y").Num(),
+			Width:  box.Get("w").Num(),
+			Height: box.Get("h").Num(),
+			Scale:  diagramScale,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("capture diagram: %w", err)
+	}
+	return png, nil
+}
+
 // browserGetter downloads a browser on demand, returning its path.
 // *launcher.Browser satisfies it.
 type browserGetter interface {
 	Get() (string, error)
+}
+
+// BrowserPath returns a usable browser path, downloading one (subject to
+// Consent) if none is installed. It is exported so other browser-based
+// callers (the -flatten rasterizer) can reuse the same acquisition and consent
+// policy.
+func BrowserPath() (string, error) {
+	return browserPath()
 }
 
 // browserPath returns the path to a usable browser: an already-installed one,
@@ -130,7 +285,7 @@ func downloadBrowser(b browserGetter) (string, error) {
 		}
 	}
 	if !allow {
-		return "", fmt.Errorf("no Chrome/Chromium found and download not authorized (re-run with -allow-download)")
+		return "", fmt.Errorf("no Chrome/Chromium found and download not authorized (re-run with -allow-download to render the document)")
 	}
 	return b.Get()
 }

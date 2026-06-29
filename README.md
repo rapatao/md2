@@ -7,7 +7,7 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 Currently supported:
 
 - **PDF** (`.pdf`)
-- **HTML** (`.html`)
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs. Diagrams render via inlined mermaid.js, or as static images with `-flatten` (e.g. for Google Docs import)
 - **Plain text** (`.txt`)
 
 ## Install
@@ -47,6 +47,7 @@ md2 input.md                  # writes input.pdf (default format)
 md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
+md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
 md2 -o report.pdf input.md    # explicit output (format from extension)
 ```
 
@@ -55,7 +56,8 @@ Flags:
 - `-o` output file. Default: input name with the format extension. Cannot be combined with multiple formats.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (currently `mermaid`), or `all`. Default: none — diagrams render as plain code unless enabled.
-- `-allow-download` authorize downloading Chromium for the PDF browser fallback without prompting (useful in CI).
+- `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.
 
 ## PDF engine
@@ -89,21 +91,27 @@ graph TD; A-->B;
 ````
 
 ```sh
-md2 -f html -render mermaid input.md   # enable mermaid
-md2 -f pdf  -render all     input.md   # enable every supported renderer
+md2 -f html -render mermaid input.md            # enable mermaid (interactive)
+md2 -f html -render mermaid -flatten input.md   # diagrams as static images
+md2 -f pdf  -render all     input.md            # enable every supported renderer
 ```
 
 When enabled:
 
-- **HTML** — the [mermaid](https://mermaid.js.org) library is inlined into the
-  output (no network access needed to view it), and the block renders to SVG in
-  the browser.
+- **HTML** — by default the [mermaid](https://mermaid.js.org) library is inlined
+  into the output (no network access needed to view it), and the block renders
+  to SVG in the browser — interactive, but needing a JS runtime to display. With
+  `-flatten`, md2 renders the document in a headless browser and replaces each
+  diagram with a static PNG image, producing a self-contained file that displays
+  anywhere — including a Google Docs import (upload the `.html` to Drive, then
+  "Open with > Google Docs"), which runs no JavaScript.
 - **PDF** — a mermaid block forces the headless-browser engine (the pure-Go
   renderer cannot run JavaScript), so the diagram is captured as vector graphics.
 - **Plain text** — no diagram; the mermaid source is kept as code.
 
 Inlining the library adds ~3 MB to each HTML file that contains a diagram;
-files without one are unaffected.
+`-flatten` avoids that (the diagrams become images instead). Files without a
+diagram are unaffected either way.
 
 Currently only `mermaid` is supported; the `-render` flag is designed to take
 additional renderers (e.g. `plantuml`) in the future.
@@ -119,7 +127,7 @@ extension for the format — `docs/report.md` with `-f pdf,html` produces
 | Format | Extension | Engine |
 |--------|-----------|--------|
 | `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
-| `html` | `.html`   | goldmark (GFM), styled standalone document |
+| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js or, with `-flatten`, static PNGs (go-rod) |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
 
 ## Adding a format

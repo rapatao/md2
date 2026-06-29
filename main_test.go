@@ -110,6 +110,32 @@ func TestRunMultipleFormats(t *testing.T) {
 	}
 }
 
+// An unknown format must fail fast, before any output is written.
+func TestRunUnknownFormat(t *testing.T) {
+	in := writeInput(t)
+	err := run([]string{"-f", "html,bogus", in})
+	if err == nil {
+		t.Fatal("expected error for unknown format, got nil")
+	}
+	// Conversion is resolved up front, so nothing should have been written.
+	if _, statErr := os.Stat(replaceExt(in, ".html")); statErr == nil {
+		t.Error("no file should be written when a format is unknown")
+	}
+}
+
+// -flatten without diagrams is a no-op that needs no browser, exercising the
+// flatten code path in CI.
+func TestRunFlattenNoDiagrams(t *testing.T) {
+	in := writeInput(t)
+	if err := run([]string{"-f", "html", "-flatten", in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte("<h1")) {
+		t.Errorf("expected html output")
+	}
+}
+
 func TestRunFormatFromOutputExt(t *testing.T) {
 	in := writeInput(t)
 	out := filepath.Join(filepath.Dir(in), "custom.html")

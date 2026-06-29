@@ -44,10 +44,11 @@ func run(args []string) error {
 		format        string
 		render        string
 		allowDownload bool
+		flatten       bool
 		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &render, &allowDownload, &showVersion)
+	fs := flagSet(&output, &format, &render, &allowDownload, &flatten, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -61,6 +62,10 @@ func run(args []string) error {
 	if err := htmlconv.EnableDiagrams(parseList(render)); err != nil {
 		return err
 	}
+
+	// -flatten renders HTML diagrams to static images rather than inlining
+	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
+	htmlconv.Flatten = flatten
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
 	chrome.Consent = consentFunc(allowDownload)
@@ -98,6 +103,18 @@ func run(args []string) error {
 		convs[i] = conv
 	}
 
+	// Resolve every output path up front. The format key doubles as the file
+	// extension, and -f deduplicates, so distinct formats never collide.
+	dsts := make([]string, len(formats))
+	for i, format := range formats {
+		dst := output
+		if dst == "" {
+			base := strings.TrimSuffix(input, filepath.Ext(input))
+			dst = base + "." + format
+		}
+		dsts[i] = dst
+	}
+
 	src, err := os.ReadFile(input)
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
@@ -106,14 +123,10 @@ func run(args []string) error {
 	// Convert each format independently: one failing format must not stop the
 	// others (e.g. a PDF render error should still let HTML be written).
 	var errs []error
-	for i, format := range formats {
-		dst := output
-		if dst == "" {
-			base := strings.TrimSuffix(input, filepath.Ext(input))
-			dst = base + "." + format
-		}
+	for i := range formats {
+		dst := dsts[i]
 
-		if err := writeOutput(convs[i], src, dst); err != nil {
+		if err := writeOutput(convs[i], src, input, dst); err != nil {
 			errs = append(errs, err)
 			fmt.Fprintf(os.Stderr, "md2: %v\n", err)
 			continue
@@ -177,15 +190,22 @@ func stdinIsTerminal() bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-// writeOutput runs the converter and writes the result to path.
-func writeOutput(conv converter.Converter, src []byte, path string) error {
+// writeOutput runs the converter and writes the result to path. A converter
+// that implements converter.PathConverter is given the input path too, so it
+// can resolve relative references (e.g. local images).
+func writeOutput(conv converter.Converter, src []byte, srcPath, path string) error {
 	out, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
 	defer out.Close()
 
-	if err := conv.Convert(src, out); err != nil {
+	if pc, ok := conv.(converter.PathConverter); ok {
+		err = pc.ConvertFrom(src, srcPath, out)
+	} else {
+		err = conv.Convert(src, out)
+	}
+	if err != nil {
 		return fmt.Errorf("convert %s: %w", path, err)
 	}
 	return nil
