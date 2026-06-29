@@ -49,6 +49,7 @@ md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
 md2 -o report.pdf input.md    # explicit output (format from extension)
+md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
 ```
 
 Flags:
@@ -57,6 +58,7 @@ Flags:
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (currently `mermaid`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.
 

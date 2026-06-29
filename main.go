@@ -7,10 +7,14 @@
 // If -o is omitted, the output filename is the input with its extension
 // replaced by the format. If -f is omitted, the format is inferred from the
 // output extension, defaulting to pdf.
+//
+// With -stdout the converted result is written to standard output instead of a
+// file (single format only); pass -o as well to also write the file.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +35,10 @@ import (
 // version is the build version, overridden at release time via -ldflags.
 var version = "dev"
 
+// stdoutWriter is where -stdout streams the converted result. It is a package
+// variable so tests can capture the output.
+var stdoutWriter io.Writer = os.Stdout
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "md2:", err)
@@ -45,10 +53,11 @@ func run(args []string) error {
 		render        string
 		allowDownload bool
 		flatten       bool
+		stdout        bool
 		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &render, &allowDownload, &flatten, &showVersion)
+	fs := flagSet(&output, &format, &render, &allowDownload, &flatten, &stdout, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -92,6 +101,12 @@ func run(args []string) error {
 		return fmt.Errorf("-o cannot be used with multiple formats %v; omit -o or pass one format", formats)
 	}
 
+	// -stdout writes to a single stream, so it cannot serve many formats (their
+	// bytes would interleave).
+	if stdout && len(formats) > 1 {
+		return fmt.Errorf("-stdout cannot be used with multiple formats %v; pass one format", formats)
+	}
+
 	// Resolve every converter up front so an unknown format fails fast,
 	// before we write any output.
 	convs := make([]converter.Converter, len(formats))
@@ -118,6 +133,26 @@ func run(args []string) error {
 	src, err := os.ReadFile(input)
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
+	}
+
+	// -stdout streams the (single) converted result to standard output. With -o
+	// it also writes the file; the "wrote" notice goes to stderr to keep the
+	// converted bytes on stdout uncorrupted.
+	if stdout {
+		var buf bytes.Buffer
+		if err := convert(convs[0], src, input, &buf); err != nil {
+			return fmt.Errorf("convert: %w", err)
+		}
+		if output != "" {
+			if err := os.WriteFile(dsts[0], buf.Bytes(), 0o644); err != nil {
+				return fmt.Errorf("create output: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "wrote %s\n", dsts[0])
+		}
+		if _, err := stdoutWriter.Write(buf.Bytes()); err != nil {
+			return fmt.Errorf("write stdout: %w", err)
+		}
+		return nil
 	}
 
 	// Convert each format independently: one failing format must not stop the
@@ -190,9 +225,7 @@ func stdinIsTerminal() bool {
 	return info.Mode()&os.ModeCharDevice != 0
 }
 
-// writeOutput runs the converter and writes the result to path. A converter
-// that implements converter.PathConverter is given the input path too, so it
-// can resolve relative references (e.g. local images).
+// writeOutput converts src and writes the result to a new file at path.
 func writeOutput(conv converter.Converter, src []byte, srcPath, path string) error {
 	out, err := os.Create(path)
 	if err != nil {
@@ -200,13 +233,18 @@ func writeOutput(conv converter.Converter, src []byte, srcPath, path string) err
 	}
 	defer out.Close()
 
-	if pc, ok := conv.(converter.PathConverter); ok {
-		err = pc.ConvertFrom(src, srcPath, out)
-	} else {
-		err = conv.Convert(src, out)
-	}
-	if err != nil {
+	if err := convert(conv, src, srcPath, out); err != nil {
 		return fmt.Errorf("convert %s: %w", path, err)
 	}
 	return nil
+}
+
+// convert runs the converter, writing the result to w. A converter that
+// implements converter.PathConverter is given the input path too, so it can
+// resolve relative references (e.g. local images).
+func convert(conv converter.Converter, src []byte, srcPath string, w io.Writer) error {
+	if pc, ok := conv.(converter.PathConverter); ok {
+		return pc.ConvertFrom(src, srcPath, w)
+	}
+	return conv.Convert(src, w)
 }
