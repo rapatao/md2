@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestParseFormats(t *testing.T) {
+func TestParseList(t *testing.T) {
 	tests := []struct {
 		in   string
 		want []string
@@ -22,8 +22,8 @@ func TestParseFormats(t *testing.T) {
 		{",, ,", nil},
 	}
 	for _, tt := range tests {
-		if got := parseFormats(tt.in); !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("parseFormats(%q) = %v, want %v", tt.in, got, tt.want)
+		if got := parseList(tt.in); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("parseList(%q) = %v, want %v", tt.in, got, tt.want)
 		}
 	}
 }

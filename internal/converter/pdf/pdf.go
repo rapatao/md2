@@ -14,6 +14,7 @@ import (
 
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
+	htmlconv "github.com/rapatao/md2/internal/converter/html"
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -23,6 +24,13 @@ import (
 type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error {
+	// Enabled diagrams (e.g. mermaid) render via client-side JavaScript, which
+	// the pure-Go renderer cannot run. Go straight to the headless browser so
+	// the diagrams appear as SVG rather than raw code.
+	if htmlconv.RequiresBrowser(src) {
+		return (chrome.Converter{}).Convert(src, w)
+	}
+
 	// Render to a buffer first so a partial pure-Go result is never written
 	// when we end up falling back to the browser renderer.
 	var buf bytes.Buffer
