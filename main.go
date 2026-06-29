@@ -21,8 +21,9 @@ import (
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
 
-	// Register the available output formats via their init funcs.
-	_ "github.com/rapatao/md2/internal/converter/html"
+	htmlconv "github.com/rapatao/md2/internal/converter/html"
+
+	// Register the remaining output formats via their init funcs.
 	_ "github.com/rapatao/md2/internal/converter/pdf"
 	_ "github.com/rapatao/md2/internal/converter/text"
 )
@@ -41,11 +42,12 @@ func run(args []string) error {
 	var (
 		output        string
 		format        string
+		render        string
 		allowDownload bool
 		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &allowDownload, &showVersion)
+	fs := flagSet(&output, &format, &render, &allowDownload, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,6 +55,11 @@ func run(args []string) error {
 	if showVersion {
 		fmt.Println("md2", version)
 		return nil
+	}
+
+	// Enable any diagram renderers requested via -render. Off by default.
+	if err := htmlconv.EnableDiagrams(parseList(render)); err != nil {
+		return err
 	}
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
@@ -66,7 +73,7 @@ func run(args []string) error {
 	input := rest[0]
 
 	// Resolve formats: explicit -f (comma list) > output extension > default pdf.
-	formats := parseFormats(format)
+	formats := parseList(format)
 	if len(formats) == 0 {
 		if ext := strings.TrimPrefix(filepath.Ext(output), "."); ext != "" {
 			formats = []string{ext}
@@ -116,9 +123,9 @@ func run(args []string) error {
 	return errors.Join(errs...)
 }
 
-// parseFormats splits a comma-separated format list, trimming blanks and
-// dropping duplicates while preserving order.
-func parseFormats(s string) []string {
+// parseList splits a comma-separated list, trimming blanks and dropping
+// duplicates while preserving order.
+func parseList(s string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, f := range strings.Split(s, ",") {

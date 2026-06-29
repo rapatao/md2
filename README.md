@@ -54,6 +54,7 @@ Flags:
 
 - `-o` output file. Default: input name with the format extension. Cannot be combined with multiple formats.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
+- `-render` diagram renderer(s) to enable, comma-separated (currently `mermaid`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-allow-download` authorize downloading Chromium for the PDF browser fallback without prompting (useful in CI).
 - `-version` print the version and exit.
 
@@ -75,6 +76,37 @@ No Chrome/Chromium found. Download Chromium (~150MB) to render the PDF? [y/N]:
 
 On a non-interactive terminal it declines unless `-allow-download` is passed.
 Simple documents never launch a browser.
+
+## Diagrams
+
+Diagram rendering is **off by default** and enabled per run with `-render`.
+Without it, a diagram code block is rendered as plain code.
+
+````markdown
+```mermaid
+graph TD; A-->B;
+```
+````
+
+```sh
+md2 -f html -render mermaid input.md   # enable mermaid
+md2 -f pdf  -render all     input.md   # enable every supported renderer
+```
+
+When enabled:
+
+- **HTML** — the [mermaid](https://mermaid.js.org) library is inlined into the
+  output (no network access needed to view it), and the block renders to SVG in
+  the browser.
+- **PDF** — a mermaid block forces the headless-browser engine (the pure-Go
+  renderer cannot run JavaScript), so the diagram is captured as vector graphics.
+- **Plain text** — no diagram; the mermaid source is kept as code.
+
+Inlining the library adds ~3 MB to each HTML file that contains a diagram;
+files without one are unaffected.
+
+Currently only `mermaid` is supported; the `-render` flag is designed to take
+additional renderers (e.g. `plantuml`) in the future.
 
 ### Output naming
 
