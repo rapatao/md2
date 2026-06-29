@@ -2,6 +2,10 @@
 // Importing it (for side effects) registers the "html" format. Its Render
 // function is also reused by the browser-based PDF fallback.
 //
+// Local images referenced by the document are embedded as data URIs so the
+// output is self-contained — it needs no accompanying asset files and survives
+// being moved or imported elsewhere.
+//
 // Fenced code blocks tagged `mermaid` are emitted as <pre class="mermaid">
 // elements and, when present, the document inlines the mermaid library so the
 // diagrams render client-side (in a browser, or in the headless-browser PDF
@@ -11,8 +15,12 @@ package html
 import (
 	"bytes"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -81,24 +89,70 @@ func enabledDiagramLang(n *ast.FencedCodeBlock, src []byte) string {
 	return ""
 }
 
+// Flatten controls how enabled diagrams are emitted. When false (default), a
+// diagram becomes a <pre class="mermaid"> with the mermaid library inlined, so
+// it renders client-side in a browser — interactive, but needing a JS runtime
+// to view. When true, the document is rendered in a headless browser and each
+// diagram is replaced by a static <img> (a PNG), producing a fully portable
+// file that displays anywhere (e.g. imported into Google Docs). Set from the
+// -flatten CLI flag.
+var Flatten bool
+
+// Rasterizer, if set, flattens a diagram-bearing HTML document to one with
+// static <img> diagrams using a headless browser. The chrome package installs
+// it via init; html does not import chrome (which imports html) so as to avoid
+// an import cycle, hence this indirection.
+var Rasterizer func(doc []byte) ([]byte, error)
+
 // Converter renders markdown source to an HTML document.
 type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error {
-	doc, err := Render(src)
+	return convert(src, ".", w)
+}
+
+// ConvertFrom is Convert with the input file path provided, so relative image
+// references can be resolved against its directory and embedded.
+func (Converter) ConvertFrom(src []byte, srcPath string, w io.Writer) error {
+	return convert(src, filepath.Dir(srcPath), w)
+}
+
+func convert(src []byte, baseDir string, w io.Writer) error {
+	doc, err := RenderFrom(src, baseDir)
 	if err != nil {
 		return err
 	}
+
+	// With -flatten, replace client-side diagrams with static images so the
+	// output is self-contained and needs no JS runtime to view. Only documents
+	// that actually contain an enabled diagram need the browser.
+	if Flatten && RequiresBrowser(src) {
+		if Rasterizer == nil {
+			return fmt.Errorf("-flatten needs headless-browser support, which is unavailable")
+		}
+		if doc, err = Rasterizer(doc); err != nil {
+			return err
+		}
+	}
+
 	_, err = w.Write(doc)
 	return err
 }
 
-// Render converts markdown into a full, self-contained HTML document with
-// basic styling (readable body, bordered tables, code blocks). When mermaid
-// rendering is enabled and the source contains mermaid diagrams, the mermaid
-// library and an init script are inlined so the diagrams render without any
-// network access.
+// Render converts markdown into a full HTML document, resolving relative image
+// references against the current working directory. See RenderFrom.
 func Render(src []byte) ([]byte, error) {
+	return RenderFrom(src, ".")
+}
+
+// RenderFrom converts markdown into a full, self-contained HTML document with
+// basic styling (readable body, bordered tables, code blocks). Local images
+// referenced by the document are embedded as data URIs — relative paths are
+// resolved against baseDir — so the output stands alone without its asset
+// files. When mermaid rendering is enabled and the source contains mermaid
+// diagrams, the mermaid library and an init script are inlined so the diagrams
+// render without any network access.
+func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		// Generate GitHub-style id attributes on headings so in-document links
@@ -117,14 +171,83 @@ func Render(src []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	// Embed local images into the body before the mermaid library is appended,
+	// so the scan never touches that script (which contains <img>-like strings).
+	bodyBytes := inlineLocalImages(body.Bytes(), baseDir)
+
 	var out bytes.Buffer
 	out.WriteString(docHead)
-	out.Write(body.Bytes())
+	out.Write(bodyBytes)
 	if hasMermaid {
 		out.WriteString(mermaidScript)
 	}
 	out.WriteString(docTail)
 	return out.Bytes(), nil
+}
+
+// imgSrcRe matches the src attribute of an <img> tag, capturing the URL.
+var imgSrcRe = regexp.MustCompile(`(<img\b[^>]*?\bsrc=")([^"]*)(")`)
+
+// inlineLocalImages rewrites <img src="..."> references that point at local
+// files into self-contained data URIs, resolving relative paths against baseDir.
+// Already-inlined (data:) and remote (scheme://) sources are left untouched, as
+// is any path that cannot be read — a broken local reference is reported but
+// does not fail the render.
+func inlineLocalImages(doc []byte, baseDir string) []byte {
+	return imgSrcRe.ReplaceAllFunc(doc, func(m []byte) []byte {
+		g := imgSrcRe.FindSubmatch(m)
+		src := string(g[2])
+		if src == "" || strings.HasPrefix(src, "data:") || hasURLScheme(src) {
+			return m
+		}
+
+		path := src
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(baseDir, filepath.FromSlash(src))
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "md2: cannot embed image %q: %v\n", src, err)
+			return m
+		}
+		uri := "data:" + imageMIME(path) + ";base64," + base64.StdEncoding.EncodeToString(data)
+		return append(append(append([]byte(nil), g[1]...), uri...), g[3]...)
+	})
+}
+
+// hasURLScheme reports whether s starts with a URL scheme (e.g. "https:") or is
+// protocol-relative ("//host/..."), i.e. a non-local reference.
+func hasURLScheme(s string) bool {
+	if strings.HasPrefix(s, "//") {
+		return true
+	}
+	if i := strings.IndexByte(s, ':'); i > 0 {
+		for _, r := range s[:i] {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.') {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// imageMIME guesses an image MIME type from a file extension, defaulting to PNG.
+func imageMIME(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	default:
+		return "image/png"
+	}
 }
 
 // RequiresBrowser reports whether rendering the source needs a headless

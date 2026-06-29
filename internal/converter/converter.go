@@ -15,6 +15,17 @@ type Converter interface {
 	Convert(src []byte, w io.Writer) error
 }
 
+// PathConverter is an optional richer interface for converters that need to
+// resolve resources relative to the input file — e.g. inlining local images
+// referenced by a relative path. When a converter implements it, the runner
+// calls ConvertFrom (passing the input path) instead of Convert.
+type PathConverter interface {
+	Converter
+	// ConvertFrom is Convert with the input file path also provided, so the
+	// converter can resolve relative references against its directory.
+	ConvertFrom(src []byte, srcPath string, w io.Writer) error
+}
+
 // registry maps a format key (e.g. "pdf") to its Converter.
 var registry = map[string]Converter{}
 
