@@ -17,13 +17,31 @@ func TestRender(t *testing.T) {
 		"<!DOCTYPE html>",
 		`<meta charset="utf-8">`,
 		"<style>",
-		"<h1>Title</h1>",
+		`<h1 id="title">Title</h1>`,
 		"<strong>bold</strong>",
 		"</body>",
 		"</html>",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Render output missing %q", want)
+		}
+	}
+}
+
+// In-document links ([text](#anchor)) only work when the target heading
+// carries a matching id attribute. Auto heading IDs must stay enabled.
+func TestRenderHeadingAnchors(t *testing.T) {
+	out, err := Render([]byte("[Go](#my-section)\n\n## My Section\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`<a href="#my-section">Go</a>`,
+		`<h2 id="my-section">My Section</h2>`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("Render output missing %q:\n%s", want, s)
 		}
 	}
 }
@@ -152,7 +170,7 @@ func TestConverterConvert(t *testing.T) {
 	if err := (Converter{}).Convert([]byte("# Hi\n"), &buf); err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("<h1>Hi</h1>")) {
+	if !bytes.Contains(buf.Bytes(), []byte(`<h1 id="hi">Hi</h1>`)) {
 		t.Errorf("Convert output missing heading:\n%s", buf.Bytes())
 	}
 }
