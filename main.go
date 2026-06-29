@@ -27,6 +27,9 @@ import (
 	_ "github.com/rapatao/md2/internal/converter/text"
 )
 
+// version is the build version, overridden at release time via -ldflags.
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "md2:", err)
@@ -39,11 +42,17 @@ func run(args []string) error {
 		output        string
 		format        string
 		allowDownload bool
+		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &allowDownload)
+	fs := flagSet(&output, &format, &allowDownload, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if showVersion {
+		fmt.Println("md2", version)
+		return nil
 	}
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.

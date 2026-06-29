@@ -1,0 +1,68 @@
+# GoReleaser config. Builds cross-platform binaries on a pushed tag (v*),
+# publishes a GitHub Release, and updates the Homebrew tap formula.
+# Docs: https://goreleaser.com
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: md2
+    main: .
+    binary: md2
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: md2
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: md2
+    repository:
+      owner: rapatao
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/rapatao/md2"
+    description: "Convert markdown files to PDF, HTML, and text"
+    # Strip the macOS quarantine flag so the unsigned binary runs without
+    # a Gatekeeper prompt.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/md2"]
+          end
+
+release:
+  github:
+    owner: rapatao
+    name: md2
+  draft: false
+  prerelease: auto
