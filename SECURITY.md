@@ -22,3 +22,8 @@ Include:
 md2 renders untrusted markdown. The PDF browser fallback launches a local
 headless Chrome/Chromium to print HTML; reports about sandbox escapes, SSRF via
 embedded resources, or remote-content fetching are welcome.
+
+Release artifacts are signed keyless via cosign in CI — see
+[Verifying a release](README.md#verifying-a-release). Reports about a release
+signature not matching the `release.yml` workflow identity are treated as a
+supply-chain incident.

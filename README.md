@@ -26,7 +26,9 @@ nix profile install github:rapatao/md2     # install into your profile
 ```
 
 **Prebuilt binaries**: download the archive for your OS/arch from the
-[latest release](https://github.com/rapatao/md2/releases/latest).
+[latest release](https://github.com/rapatao/md2/releases/latest). Each release
+is signed (keyless, via [cosign](https://github.com/sigstore/cosign)) — see
+[Verifying a release](#verifying-a-release).
 
 **Go**:
 
@@ -38,6 +40,27 @@ Or build locally:
 
 ```sh
 go build -o md2 .
+```
+
+## Verifying a release
+
+Each release publishes `checksums.txt` plus a keyless [cosign](https://github.com/sigstore/cosign)
+signature (`checksums.txt.sig`) and certificate (`checksums.txt.pem`), proving
+the checksums were produced by the `release.yml` workflow in this repo (not a
+tampered fork or mirror).
+
+```sh
+cosign verify-blob checksums.txt \
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  --certificate-identity-regexp "https://github.com/rapatao/md2/.github/workflows/release.yml@.*" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Then confirm your downloaded archive matches a line in the verified `checksums.txt`:
+
+```sh
+sha256sum --ignore-missing -c checksums.txt
 ```
 
 ## Usage
