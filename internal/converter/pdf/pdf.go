@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"unicode/utf8"
 
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
@@ -51,6 +50,13 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 		return browser()
 	}
 
+	// gofpdf's UTF-8 path mishandles characters outside the Basic Multilingual
+	// Plane (4-byte UTF-8, e.g. emoji) and panics. It cannot render them, so
+	// route straight to the browser fallback instead of silently dropping them.
+	if hasNonBMP(src) {
+		return browser()
+	}
+
 	// Render to a buffer first so a partial pure-Go result is never written
 	// when we end up falling back to the browser renderer.
 	var buf bytes.Buffer
@@ -75,11 +81,6 @@ func renderPureGo(src []byte, w io.Writer) (err error) {
 		}
 	}()
 
-	// gofpdf's UTF-8 path mishandles characters outside the Basic Multilingual
-	// Plane (4-byte UTF-8, e.g. emoji) and panics. It cannot render them anyway,
-	// so drop them before handing the source to the renderer.
-	src = stripNonBMP(src)
-
 	ctx := context.Background()
 
 	// goldmark-pdf measures table column widths before it sets any font, so a
@@ -103,17 +104,15 @@ func renderPureGo(src []byte, w io.Writer) (err error) {
 	return md.Convert(src, w)
 }
 
-// stripNonBMP removes runes outside the Basic Multilingual Plane (U+10000 and
-// above), which gofpdf cannot render. Other bytes are preserved unchanged.
-func stripNonBMP(src []byte) []byte {
-	out := make([]byte, 0, len(src))
+// hasNonBMP reports whether src contains a rune outside the Basic
+// Multilingual Plane (U+10000 and above), which gofpdf cannot render.
+func hasNonBMP(src []byte) bool {
 	for _, r := range string(src) {
 		if r > 0xFFFF {
-			continue
+			return true
 		}
-		out = utf8.AppendRune(out, r)
 	}
-	return out
+	return false
 }
 
 func init() {
