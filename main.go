@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/rapatao/md2/internal/converter"
@@ -34,6 +35,18 @@ import (
 
 // version is the build version, overridden at release time via -ldflags.
 var version = "dev"
+
+// resolveVersion returns version, falling back to the module version embedded
+// by `go install pkg@version` when ldflags didn't set one (e.g. dev builds).
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 // stdoutWriter is where -stdout streams the converted result. It is a package
 // variable so tests can capture the output.
@@ -63,7 +76,7 @@ func run(args []string) error {
 	}
 
 	if showVersion {
-		fmt.Println("md2", version)
+		fmt.Println("md2", resolveVersion())
 		return nil
 	}
 
