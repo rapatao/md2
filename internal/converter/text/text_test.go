@@ -61,6 +61,16 @@ func TestRenderNestedListIndented(t *testing.T) {
 	}
 }
 
+func TestRenderTaskListCheckboxes(t *testing.T) {
+	got := render(t, "- [ ] todo one\n- [x] done one\n")
+	if !strings.Contains(got, "- [ ] todo one") {
+		t.Errorf("unchecked box missing: %q", got)
+	}
+	if !strings.Contains(got, "- [x] done one") {
+		t.Errorf("checked box missing: %q", got)
+	}
+}
+
 func TestRenderBlockquotePrefix(t *testing.T) {
 	got := render(t, "> quoted\n")
 	if !strings.Contains(got, "> quoted") {

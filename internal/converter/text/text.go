@@ -144,6 +144,12 @@ func inlineText(n ast.Node, src []byte) string {
 			}
 		case *ast.Image:
 			b.WriteString("[" + inlineText(c, src) + "]")
+		case *east.TaskCheckBox:
+			if t.IsChecked {
+				b.WriteString("[x] ")
+			} else {
+				b.WriteString("[ ] ")
+			}
 		case *ast.RawHTML:
 			// drop raw HTML tags
 		default:
