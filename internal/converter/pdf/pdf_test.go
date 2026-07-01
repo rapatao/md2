@@ -5,23 +5,22 @@ import (
 	"testing"
 )
 
-func TestStripNonBMP(t *testing.T) {
+func TestHasNonBMP(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
-		want string
+		want bool
 	}{
-		{"ascii unchanged", "hello world", "hello world"},
-		{"latin accents kept", "Configuração à ré", "Configuração à ré"},
-		{"bmp symbols kept", "€ — → ·", "€ — → ·"},
-		{"astral emoji dropped", "status 🟢 ok", "status  ok"},
-		{"mixed emoji dropped", "🟢🟡🔴 x", " x"},
-		{"keeps surrounding text", "a🔴b", "ab"},
+		{"ascii", "hello world", false},
+		{"latin accents", "Configuração à ré", false},
+		{"bmp symbols", "€ — → ·", false},
+		{"astral emoji", "status 🟢 ok", true},
+		{"mixed emoji", "🟢🟡🔴 x", true},
+		{"emoji amid text", "a🔴b", true},
 	}
 	for _, tt := range tests {
-		got := string(stripNonBMP([]byte(tt.in)))
-		if got != tt.want {
-			t.Errorf("%s: stripNonBMP(%q) = %q, want %q", tt.name, tt.in, got, tt.want)
+		if got := hasNonBMP([]byte(tt.in)); got != tt.want {
+			t.Errorf("%s: hasNonBMP(%q) = %v, want %v", tt.name, tt.in, got, tt.want)
 		}
 	}
 }
