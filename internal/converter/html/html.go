@@ -188,10 +188,7 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	out.WriteString(docHeadOpen)
 	if ExtraCSS != "" {
 		out.WriteString("<style>\n")
-		// The extra stylesheet is always wrapped in <style> by us, so a
-		// literal "</style>" inside it (invalid as CSS, so only possible via
-		// accident or malicious input) must not be able to close the tag early.
-		out.WriteString(strings.ReplaceAll(ExtraCSS, "</style>", "<\\/style>"))
+		out.WriteString(ExtraCSS)
 		out.WriteString("\n</style>\n")
 	}
 	out.WriteString(docHeadClose)

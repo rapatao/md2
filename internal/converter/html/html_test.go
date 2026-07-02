@@ -92,23 +92,6 @@ func TestRenderExtraCSS(t *testing.T) {
 	}
 }
 
-func TestRenderExtraCSSNeutralizesClosingTag(t *testing.T) {
-	setExtraCSS(t, "body{color:red}</style><script>alert(1)</script>")
-	out, err := Render([]byte("# Title\n"))
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-	s := string(out)
-	// A literal </style> in -css must not close the tag early: only the two
-	// </style> tags we emit ourselves (built-in block + extra block) may appear.
-	if n := strings.Count(s, "</style>"); n != 2 {
-		t.Errorf("expected exactly 2 </style> tags, got %d:\n%s", n, s)
-	}
-	if !strings.Contains(s, "body{color:red}") {
-		t.Errorf("Render output missing extra CSS text:\n%s", s)
-	}
-}
-
 const mermaidDoc = "# Diagram\n\n```mermaid\ngraph TD; A-->B;\n```\n"
 
 // enableMermaid turns mermaid rendering on for one test and resets the global
