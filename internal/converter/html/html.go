@@ -188,7 +188,11 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	out.WriteString(docHeadOpen)
 	if ExtraCSS != "" {
 		out.WriteString("<style>\n")
-		out.WriteString(ExtraCSS)
+		// RenderFrom's goldmark instance never sets WithUnsafe, so raw HTML in
+		// the markdown body is already escaped by default; -css must not be a
+		// backdoor around that. A literal "</style>" here (invalid as CSS)
+		// must not be able to close the tag early and inject live markup.
+		out.WriteString(strings.ReplaceAll(ExtraCSS, "</style>", "<\\/style>"))
 		out.WriteString("\n</style>\n")
 	}
 	out.WriteString(docHeadClose)
