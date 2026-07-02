@@ -46,17 +46,10 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 		return (chrome.Converter{}).Convert(src, w)
 	}
 
-	// Enabled diagrams (e.g. mermaid) render via client-side JavaScript, which
-	// the pure-Go renderer cannot run. Go straight to the headless browser so
-	// the diagrams appear as SVG rather than raw code.
-	if htmlconv.RequiresBrowser(src) {
-		return browser()
-	}
-
-	// gofpdf's UTF-8 path mishandles characters outside the Basic Multilingual
-	// Plane (4-byte UTF-8, e.g. emoji) and panics. It cannot render them, so
-	// route straight to the browser fallback instead of silently dropping them.
-	if hasNonBMP(src) {
+	// Enabled diagrams need client-side JS, non-BMP runes crash gofpdf, and
+	// custom CSS has no effect outside an HTML document — any of these routes
+	// straight to the headless browser instead of the pure-Go renderer.
+	if needsBrowser(src) {
 		return browser()
 	}
 
@@ -117,6 +110,14 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 		goldmark.WithRenderer(gpdf.New(opts...)),
 	)
 	return md.Convert(src, w)
+}
+
+// needsBrowser reports whether src must render through the headless-browser
+// path rather than goldmark-pdf: it contains an enabled diagram, a rune
+// outside the Basic Multilingual Plane, or custom CSS is set (goldmark-pdf
+// has no HTML/CSS layer to apply it to).
+func needsBrowser(src []byte) bool {
+	return htmlconv.RequiresBrowser(src) || hasNonBMP(src) || htmlconv.ExtraCSS != ""
 }
 
 // hasNonBMP reports whether src contains a rune outside the Basic

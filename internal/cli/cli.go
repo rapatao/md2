@@ -32,13 +32,14 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		output        string
 		format        string
 		render        string
+		css           string
 		allowDownload bool
 		flatten       bool
 		stdout        bool
 		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &render, &allowDownload, &flatten, &stdout, &showVersion)
+	fs := flagSet(&output, &format, &render, &css, &allowDownload, &flatten, &stdout, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -56,6 +57,18 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 	// -flatten renders HTML diagrams to static images rather than inlining
 	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
 	htmlconv.Flatten = flatten
+
+	// -css appends a user stylesheet after the built-in defaults in HTML
+	// output (and the browser-rendered PDF fallback); the pure-Go PDF path
+	// ignores it.
+	htmlconv.ExtraCSS = ""
+	if css != "" {
+		data, err := os.ReadFile(css)
+		if err != nil {
+			return fmt.Errorf("reading -css file: %w", err)
+		}
+		htmlconv.ExtraCSS = string(data)
+	}
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
 	chrome.Consent = consent.Policy(allowDownload)

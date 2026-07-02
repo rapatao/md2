@@ -105,6 +105,14 @@ var Flatten bool
 // an import cycle, hence this indirection.
 var Rasterizer func(doc []byte) ([]byte, error)
 
+// ExtraCSS, when non-empty, is appended as an additional <style> block just
+// before </head>, after the built-in stylesheet, so it can override or
+// extend the defaults using normal CSS cascade rules — it never replaces the
+// built-in styling. Applies to HTML output and the browser-rendered PDF
+// fallback (both render through RenderFrom); NOT the pure-Go PDF path, which
+// has no HTML/CSS layer. Set from the -css CLI flag.
+var ExtraCSS string
+
 // Converter renders markdown source to an HTML document.
 type Converter struct{}
 
@@ -177,7 +185,16 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	bodyBytes := inlineLocalImages(body.Bytes(), baseDir)
 
 	var out bytes.Buffer
-	out.WriteString(docHead)
+	out.WriteString(docHeadOpen)
+	if ExtraCSS != "" {
+		out.WriteString("<style>\n")
+		// The extra stylesheet is always wrapped in <style> by us, so a
+		// literal "</style>" inside it (invalid as CSS, so only possible via
+		// accident or malicious input) must not be able to close the tag early.
+		out.WriteString(strings.ReplaceAll(ExtraCSS, "</style>", "<\\/style>"))
+		out.WriteString("\n</style>\n")
+	}
+	out.WriteString(docHeadClose)
 	out.Write(bodyBytes)
 	if hasMermaid {
 		out.WriteString(mermaidScript)
@@ -332,7 +349,7 @@ window.__md2Mermaid=mermaid.run()
 </script>
 `
 
-const docHead = `<!DOCTYPE html>
+const docHeadOpen = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -349,7 +366,9 @@ pre.mermaid{background:none;padding:0;text-align:center}
 blockquote{border-left:4px solid #ddd;margin:0;padding:.2rem 1rem;color:#555}
 img{max-width:100%}
 </style>
-</head>
+`
+
+const docHeadClose = `</head>
 <body>
 `
 
