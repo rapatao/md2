@@ -231,6 +231,88 @@ func TestRunCSS(t *testing.T) {
 	}
 }
 
+func TestRunCSSLocalImport(t *testing.T) {
+	in := writeInput(t)
+	dir := filepath.Dir(in)
+	if err := os.WriteFile(filepath.Join(dir, "base.css"), []byte("body{color:blue}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cssPath := filepath.Join(dir, "extra.css")
+	if err := os.WriteFile(cssPath, []byte(`@import "base.css"; h1{color:red}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-f", "html", "-css", cssPath, in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte("body{color:blue}")) {
+		t.Errorf("expected imported CSS inlined in output:\n%s", data)
+	}
+	if !bytes.Contains(data, []byte("h1{color:red}")) {
+		t.Errorf("expected importing CSS preserved in output:\n%s", data)
+	}
+	if bytes.Contains(data, []byte(`@import`)) {
+		t.Errorf("local @import should be inlined, not left in output:\n%s", data)
+	}
+}
+
+func TestRunCSSNestedImport(t *testing.T) {
+	in := writeInput(t)
+	dir := filepath.Dir(in)
+	if err := os.WriteFile(filepath.Join(dir, "grandchild.css"), []byte("a{color:green}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child.css"), []byte(`@import url(grandchild.css);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cssPath := filepath.Join(dir, "extra.css")
+	if err := os.WriteFile(cssPath, []byte(`@import "child.css";`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-f", "html", "-css", cssPath, in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte("a{color:green}")) {
+		t.Errorf("expected nested import resolved in output:\n%s", data)
+	}
+}
+
+func TestRunCSSImportCycle(t *testing.T) {
+	in := writeInput(t)
+	dir := filepath.Dir(in)
+	if err := os.WriteFile(filepath.Join(dir, "a.css"), []byte(`@import "b.css"; a{color:red}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.css"), []byte(`@import "a.css"; b{color:blue}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cssPath := filepath.Join(dir, "a.css")
+	// A cycle must not hang or crash Run; the repeat import is simply dropped.
+	if err := run([]string{"-f", "html", "-css", cssPath, in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte("a{color:red}")) || !bytes.Contains(data, []byte("b{color:blue}")) {
+		t.Errorf("expected both cyclic files' rules present exactly once:\n%s", data)
+	}
+}
+
+func TestRunCSSRemoteImportUntouched(t *testing.T) {
+	in := writeInput(t)
+	cssPath := filepath.Join(filepath.Dir(in), "extra.css")
+	if err := os.WriteFile(cssPath, []byte(`@import url(https://example.com/base.css); h1{color:red}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-f", "html", "-css", cssPath, in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte(`@import url(https://example.com/base.css);`)) {
+		t.Errorf("expected remote @import left untouched for the browser to fetch:\n%s", data)
+	}
+}
+
 func TestRunCSSMissingFile(t *testing.T) {
 	in := writeInput(t)
 	err := run([]string{"-f", "html", "-css", filepath.Join(filepath.Dir(in), "nonexistent.css"), in})

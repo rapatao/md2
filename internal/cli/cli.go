@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/rapatao/md2/internal/consent"
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
 	"github.com/rapatao/md2/internal/merge"
+	"github.com/rapatao/md2/internal/urlref"
 
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 
@@ -67,6 +69,11 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("reading -css file: %w", err)
 		}
+		abs, err := filepath.Abs(css)
+		if err != nil {
+			return fmt.Errorf("resolving -css path: %w", err)
+		}
+		data = resolveCSSImports(data, filepath.Dir(css), map[string]bool{abs: true})
 		htmlconv.ExtraCSS = string(data)
 	}
 
@@ -164,6 +171,44 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		fmt.Printf("wrote %s\n", dst)
 	}
 	return errors.Join(errs...)
+}
+
+// cssImportRe matches an @import statement naming a local or remote
+// stylesheet, in any of its "url(...)"/quoted-string forms, up to the
+// terminating ";" (which may be preceded by a media query).
+var cssImportRe = regexp.MustCompile(`@import\s+(?:url\(\s*)?['"]?([^'")\s;]+)['"]?\)?[^;]*;`)
+
+// resolveCSSImports inlines local @import targets referenced from css,
+// resolving relative paths against baseDir, recursively. Remote imports
+// (scheme://) are left untouched for the browser to fetch itself. visited
+// (keyed by absolute path, seeded with the top-level -css file) guards
+// against import cycles and duplicate inlining of a diamond-imported file;
+// either causes the repeat import to be dropped rather than looped forever.
+func resolveCSSImports(css []byte, baseDir string, visited map[string]bool) []byte {
+	return cssImportRe.ReplaceAllFunc(css, func(m []byte) []byte {
+		g := cssImportRe.FindSubmatch(m)
+		target := string(g[1])
+		if urlref.HasScheme(target) {
+			return m
+		}
+
+		path := target
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(baseDir, filepath.FromSlash(target))
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil || visited[abs] {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "md2: cannot inline CSS import %q: %v\n", target, err)
+			return m
+		}
+		visited[abs] = true
+		return resolveCSSImports(data, filepath.Dir(path), visited)
+	})
 }
 
 // parseList splits a comma-separated list, trimming blanks and dropping
