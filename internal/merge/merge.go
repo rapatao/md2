@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	htmlconv "github.com/rapatao/md2/internal/converter/html"
+	"github.com/rapatao/md2/internal/urlref"
 )
 
 // Inputs reads and concatenates the given files, in order, into a single
@@ -46,7 +46,7 @@ func rewriteRelativeImagePaths(src []byte, baseDir string) []byte {
 	return mdImageRe.ReplaceAllFunc(src, func(m []byte) []byte {
 		g := mdImageRe.FindSubmatch(m)
 		dest := string(g[2])
-		if dest == "" || filepath.IsAbs(dest) || htmlconv.HasURLScheme(dest) {
+		if dest == "" || filepath.IsAbs(dest) || urlref.HasScheme(dest) {
 			return m
 		}
 		abs := filepath.Join(baseDir, filepath.FromSlash(dest))
