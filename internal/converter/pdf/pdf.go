@@ -9,11 +9,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
+	"github.com/rapatao/md2/internal/merge"
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -60,7 +63,7 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 	// Render to a buffer first so a partial pure-Go result is never written
 	// when we end up falling back to the browser renderer.
 	var buf bytes.Buffer
-	if err := renderPureGo(src, &buf); err != nil {
+	if err := renderPureGo(src, srcPath, &buf); err != nil {
 		fmt.Fprintf(os.Stderr, "md2: pure-Go PDF failed (%v); trying headless browser...\n", err)
 		if ferr := browser(); ferr != nil {
 			return fmt.Errorf("pure-Go PDF failed (%v); browser fallback failed: %w", err, ferr)
@@ -74,7 +77,7 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 
 // renderPureGo renders markdown to PDF using goldmark-pdf. It recovers from
 // panics in the underlying gofpdf library and returns them as errors.
-func renderPureGo(src []byte, w io.Writer) (err error) {
+func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("unsupported content: %v", r)
@@ -89,17 +92,29 @@ func renderPureGo(src []byte, w io.Writer) (err error) {
 	doc := gpdf.NewFpdf(ctx, gpdf.FpdfConfig{}, nil)
 	doc.Fpdf.SetFont("Helvetica", "", 12)
 
+	opts := []gpdf.Option{
+		gpdf.WithContext(ctx),
+		gpdf.WithPDF(doc),
+	}
+	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
+	// only resolve when md2 happens to run from the input file's directory.
+	// It also strips the leading "/" off absolute destinations before
+	// looking them up (fs.go's localPath), so no single DirFS root can
+	// serve both relative and absolute paths except the filesystem root
+	// itself. Normalize any remaining relative destinations to absolute
+	// first (multi-input merges already did this per-file in merge.Inputs),
+	// then root the FS at "/" so both forms resolve.
+	if srcPath != "" {
+		src = merge.RewriteRelativeImagePaths(src, filepath.Dir(srcPath))
+		opts = append(opts, gpdf.WithImageFS(http.FS(os.DirFS("/"))))
+	}
+
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		// Emit heading id attributes so goldmark-pdf registers internal-link
 		// destinations, making in-document links like [x](#my-section) clickable.
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRenderer(
-			gpdf.New(
-				gpdf.WithContext(ctx),
-				gpdf.WithPDF(doc),
-			),
-		),
+		goldmark.WithRenderer(gpdf.New(opts...)),
 	)
 	return md.Convert(src, w)
 }

@@ -26,7 +26,7 @@ func Inputs(inputs []string) ([]byte, error) {
 			return nil, fmt.Errorf("read %s: %w", in, err)
 		}
 		if len(inputs) > 1 {
-			src = rewriteRelativeImagePaths(src, filepath.Dir(in))
+			src = RewriteRelativeImagePaths(src, filepath.Dir(in))
 		}
 		parts[i] = bytes.TrimRight(src, "\n")
 	}
@@ -38,11 +38,11 @@ func Inputs(inputs []string) ([]byte, error) {
 // paren (an optional " title" plus ")").
 var mdImageRe = regexp.MustCompile(`(!\[[^\]]*\]\()([^)\s]+)([^)]*\))`)
 
-// rewriteRelativeImagePaths rewrites relative markdown image destinations to
+// RewriteRelativeImagePaths rewrites relative markdown image destinations to
 // absolute paths against baseDir, so they still resolve once concatenated
 // with files from other directories. URLs and already-absolute paths are
 // left untouched.
-func rewriteRelativeImagePaths(src []byte, baseDir string) []byte {
+func RewriteRelativeImagePaths(src []byte, baseDir string) []byte {
 	return mdImageRe.ReplaceAllFunc(src, func(m []byte) []byte {
 		g := mdImageRe.FindSubmatch(m)
 		dest := string(g[2])
