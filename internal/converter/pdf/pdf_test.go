@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
 // tiny1x1PNG is a minimal valid 1x1 transparent PNG, base64-encoded.
@@ -28,6 +30,30 @@ func TestHasNonBMP(t *testing.T) {
 		if got := hasNonBMP([]byte(tt.in)); got != tt.want {
 			t.Errorf("%s: hasNonBMP(%q) = %v, want %v", tt.name, tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestNeedsBrowserExtraCSS(t *testing.T) {
+	htmlconv.ExtraCSS = "body{color:red}"
+	t.Cleanup(func() { htmlconv.ExtraCSS = "" })
+	if !needsBrowser([]byte("plain text, no diagrams")) {
+		t.Error("expected needsBrowser to be true when ExtraCSS is set")
+	}
+}
+
+func TestRenderPureGoIgnoresExtraCSS(t *testing.T) {
+	htmlconv.ExtraCSS = "body{color:red}"
+	t.Cleanup(func() { htmlconv.ExtraCSS = "" })
+
+	var buf bytes.Buffer
+	if err := renderPureGo([]byte("# Title\n\nbody\n"), "", &buf); err != nil {
+		t.Fatalf("renderPureGo: %v", err)
+	}
+	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
+		t.Errorf("output is not a PDF: %q", buf.Bytes()[:min(4, buf.Len())])
+	}
+	if bytes.Contains(buf.Bytes(), []byte("color:red")) {
+		t.Error("pure-Go PDF path must not see -css content")
 	}
 }
 

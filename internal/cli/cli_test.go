@@ -216,6 +216,32 @@ func TestRunFlattenNoDiagrams(t *testing.T) {
 	}
 }
 
+func TestRunCSS(t *testing.T) {
+	in := writeInput(t)
+	cssPath := filepath.Join(filepath.Dir(in), "extra.css")
+	if err := os.WriteFile(cssPath, []byte("body{background:#eef}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-f", "html", "-css", cssPath, in}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, replaceExt(in, ".html"))
+	if !bytes.Contains(data, []byte("body{background:#eef}")) {
+		t.Errorf("expected -css content in output:\n%s", data)
+	}
+}
+
+func TestRunCSSMissingFile(t *testing.T) {
+	in := writeInput(t)
+	err := run([]string{"-f", "html", "-css", filepath.Join(filepath.Dir(in), "nonexistent.css"), in})
+	if err == nil {
+		t.Fatal("expected error for missing -css file, got nil")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("reading -css file")) {
+		t.Errorf("expected error to mention 'reading -css file', got: %v", err)
+	}
+}
+
 func TestRunFormatFromOutputExt(t *testing.T) {
 	in := writeInput(t)
 	out := filepath.Join(filepath.Dir(in), "custom.html")

@@ -71,6 +71,7 @@ md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
+md2 -f html -css extra.css input.md  # append custom CSS after the built-in stylesheet
 md2 -o report.pdf input.md    # explicit output (format from extension)
 md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md  # merge files, in order, into one document
@@ -82,6 +83,7 @@ Flags:
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (currently `mermaid`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.
@@ -90,10 +92,12 @@ Flags:
 
 PDF uses a two-stage strategy:
 
-1. **Pure Go** (`goldmark-pdf`) — fast, no external runtime. Handles most documents.
+1. **Pure Go** (`goldmark-pdf`) — fast, no external runtime. Handles most
+   documents, but has no HTML/CSS layer, so `-css` has no effect on it.
 2. **Headless browser fallback** — if the pure-Go renderer fails (e.g. complex
-   tables, or glyphs like emoji it cannot lay out), md2 prints a styled HTML
-   version to PDF with Chrome/Chromium for full fidelity.
+   tables, or glyphs like emoji it cannot lay out), or if `-css` is passed
+   (custom CSS can only be applied to a rendered HTML document), md2 prints a
+   styled HTML version to PDF with Chrome/Chromium for full fidelity.
 
 The fallback prefers a browser already installed on the system. If none is
 found it asks before downloading Chromium (~150MB, cached for later runs):

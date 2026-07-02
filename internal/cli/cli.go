@@ -14,6 +14,7 @@ import (
 	"github.com/rapatao/md2/internal/consent"
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
+	"github.com/rapatao/md2/internal/css"
 	"github.com/rapatao/md2/internal/merge"
 
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
@@ -32,13 +33,14 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		output        string
 		format        string
 		render        string
+		cssPath       string
 		allowDownload bool
 		flatten       bool
 		stdout        bool
 		showVersion   bool
 	)
 
-	fs := flagSet(&output, &format, &render, &allowDownload, &flatten, &stdout, &showVersion)
+	fs := flagSet(&output, &format, &render, &cssPath, &allowDownload, &flatten, &stdout, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -56,6 +58,18 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 	// -flatten renders HTML diagrams to static images rather than inlining
 	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
 	htmlconv.Flatten = flatten
+
+	// -css appends a user stylesheet after the built-in defaults in HTML
+	// output (and the browser-rendered PDF fallback); the pure-Go PDF path
+	// ignores it.
+	htmlconv.ExtraCSS = ""
+	if cssPath != "" {
+		extraCSS, err := css.Load(cssPath)
+		if err != nil {
+			return fmt.Errorf("reading -css file: %w", err)
+		}
+		htmlconv.ExtraCSS = extraCSS
+	}
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
 	chrome.Consent = consent.Policy(allowDownload)
