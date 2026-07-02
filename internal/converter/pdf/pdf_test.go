@@ -2,8 +2,14 @@ package pdf
 
 import (
 	"bytes"
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// tiny1x1PNG is a minimal valid 1x1 transparent PNG, base64-encoded.
+const tiny1x1PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 func TestHasNonBMP(t *testing.T) {
 	tests := []struct {
@@ -27,7 +33,7 @@ func TestHasNonBMP(t *testing.T) {
 
 func TestRenderPureGoSimple(t *testing.T) {
 	var buf bytes.Buffer
-	if err := renderPureGo([]byte("# Title\n\nbody\n"), &buf); err != nil {
+	if err := renderPureGo([]byte("# Title\n\nbody\n"), "", &buf); err != nil {
 		t.Fatalf("renderPureGo: %v", err)
 	}
 	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
@@ -39,10 +45,32 @@ func TestRenderPureGoTableFirst(t *testing.T) {
 	// A table as the first block previously panicked; it must now render.
 	md := "| a | b |\n|---|---|\n| 1 | 2 |\n"
 	var buf bytes.Buffer
-	if err := renderPureGo([]byte(md), &buf); err != nil {
+	if err := renderPureGo([]byte(md), "", &buf); err != nil {
 		t.Fatalf("renderPureGo: %v", err)
 	}
 	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
 		t.Error("table-first document did not render to PDF")
+	}
+}
+
+func TestRenderPureGoRelativeImageResolvesAgainstSrcDir(t *testing.T) {
+	dir := t.TempDir()
+	png, err := base64.StdEncoding.DecodeString(tiny1x1PNG)
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fig.png"), png, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// Run from outside dir, as md2 would when invoked with a path to a file
+	// elsewhere; only srcPath (not the CWD) should determine image lookup.
+	md := "# Doc\n\n![x](fig.png)\n"
+	var buf bytes.Buffer
+	if err := renderPureGo([]byte(md), filepath.Join(dir, "doc.md"), &buf); err != nil {
+		t.Fatalf("renderPureGo: %v", err)
+	}
+	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
+		t.Error("document with relative image did not render to PDF")
 	}
 }

@@ -9,7 +9,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
@@ -60,7 +62,7 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 	// Render to a buffer first so a partial pure-Go result is never written
 	// when we end up falling back to the browser renderer.
 	var buf bytes.Buffer
-	if err := renderPureGo(src, &buf); err != nil {
+	if err := renderPureGo(src, srcPath, &buf); err != nil {
 		fmt.Fprintf(os.Stderr, "md2: pure-Go PDF failed (%v); trying headless browser...\n", err)
 		if ferr := browser(); ferr != nil {
 			return fmt.Errorf("pure-Go PDF failed (%v); browser fallback failed: %w", err, ferr)
@@ -74,7 +76,7 @@ func convertFrom(src []byte, srcPath string, w io.Writer) error {
 
 // renderPureGo renders markdown to PDF using goldmark-pdf. It recovers from
 // panics in the underlying gofpdf library and returns them as errors.
-func renderPureGo(src []byte, w io.Writer) (err error) {
+func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("unsupported content: %v", r)
@@ -89,17 +91,24 @@ func renderPureGo(src []byte, w io.Writer) (err error) {
 	doc := gpdf.NewFpdf(ctx, gpdf.FpdfConfig{}, nil)
 	doc.Fpdf.SetFont("Helvetica", "", 12)
 
+	opts := []gpdf.Option{
+		gpdf.WithContext(ctx),
+		gpdf.WithPDF(doc),
+	}
+	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
+	// only resolve when md2 happens to run from the input file's directory.
+	// Root the FS at the input file's directory instead, matching how the
+	// HTML/browser renderer resolves relative images.
+	if srcPath != "" {
+		opts = append(opts, gpdf.WithImageFS(http.FS(os.DirFS(filepath.Dir(srcPath)))))
+	}
+
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		// Emit heading id attributes so goldmark-pdf registers internal-link
 		// destinations, making in-document links like [x](#my-section) clickable.
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRenderer(
-			gpdf.New(
-				gpdf.WithContext(ctx),
-				gpdf.WithPDF(doc),
-			),
-		),
+		goldmark.WithRenderer(gpdf.New(opts...)),
 	)
 	return md.Convert(src, w)
 }
