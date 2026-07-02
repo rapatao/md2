@@ -73,4 +73,35 @@ func TestRenderPureGoRelativeImageResolvesAgainstSrcDir(t *testing.T) {
 	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
 		t.Error("document with relative image did not render to PDF")
 	}
+	// goldmark-pdf logs a missing-image error but still returns a (blank)
+	// PDF, so a bare success check isn't enough; confirm the image actually
+	// got embedded as an XObject.
+	if !bytes.Contains(buf.Bytes(), []byte("/Subtype /Image")) {
+		t.Error("image was not embedded in the PDF")
+	}
+}
+
+func TestRenderPureGoAbsoluteImageResolves(t *testing.T) {
+	// Simulates the multi-input merge case: merge.Inputs rewrites each
+	// file's relative image references to absolute paths (since the merged
+	// document has no single directory to resolve them against), so the
+	// pure-Go renderer must be able to look those up too.
+	dir := t.TempDir()
+	png, err := base64.StdEncoding.DecodeString(tiny1x1PNG)
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	imgPath := filepath.Join(dir, "fig.png")
+	if err := os.WriteFile(imgPath, png, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	md := "# Doc\n\n![x](" + filepath.ToSlash(imgPath) + ")\n"
+	var buf bytes.Buffer
+	if err := renderPureGo([]byte(md), filepath.Join(dir, "doc.md"), &buf); err != nil {
+		t.Fatalf("renderPureGo: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("/Subtype /Image")) {
+		t.Error("image was not embedded in the PDF")
+	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
+	"github.com/rapatao/md2/internal/merge"
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -97,10 +98,15 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 	}
 	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
 	// only resolve when md2 happens to run from the input file's directory.
-	// Root the FS at the input file's directory instead, matching how the
-	// HTML/browser renderer resolves relative images.
+	// It also strips the leading "/" off absolute destinations before
+	// looking them up (fs.go's localPath), so no single DirFS root can
+	// serve both relative and absolute paths except the filesystem root
+	// itself. Normalize any remaining relative destinations to absolute
+	// first (multi-input merges already did this per-file in merge.Inputs),
+	// then root the FS at "/" so both forms resolve.
 	if srcPath != "" {
-		opts = append(opts, gpdf.WithImageFS(http.FS(os.DirFS(filepath.Dir(srcPath)))))
+		src = merge.RewriteRelativeImagePaths(src, filepath.Dir(srcPath))
+		opts = append(opts, gpdf.WithImageFS(http.FS(os.DirFS("/"))))
 	}
 
 	md := goldmark.New(
