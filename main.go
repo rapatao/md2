@@ -40,7 +40,7 @@ func resolveVersion() string {
 }
 
 func main() {
-	if err := cli.Run(os.Args[1:], resolveVersion()); err != nil {
+	if err := cli.Run(os.Args[1:], resolveVersion(), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "md2:", err)
 		os.Exit(1)
 	}

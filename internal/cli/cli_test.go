@@ -3,11 +3,18 @@ package cli
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+// run invokes Run with a fixed test version and discards -stdout output; use
+// Run directly when a test cares about either.
+func run(args []string) error {
+	return Run(args, "test", io.Discard)
+}
 
 func TestParseList(t *testing.T) {
 	tests := []struct {
@@ -41,8 +48,8 @@ func writeInput(t *testing.T) string {
 
 func TestRunDefaultPDF(t *testing.T) {
 	in := writeInput(t)
-	if err := Run([]string{in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 
 	out := replaceExt(in, ".pdf")
@@ -54,8 +61,8 @@ func TestRunDefaultPDF(t *testing.T) {
 
 func TestRunExplicitHTML(t *testing.T) {
 	in := writeInput(t)
-	if err := Run([]string{"-f", "html", in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "html", in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 
 	data := readFile(t, replaceExt(in, ".html"))
@@ -71,8 +78,8 @@ func TestRunHTMLTable(t *testing.T) {
 	if err := os.WriteFile(in, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"-f", "html", in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "html", in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	data := readFile(t, replaceExt(in, ".html"))
 	if !bytes.Contains(data, []byte("<table>")) {
@@ -88,8 +95,8 @@ func TestRunPDFTableFirst(t *testing.T) {
 	if err := os.WriteFile(in, []byte(md), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"-f", "pdf", in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "pdf", in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	data := readFile(t, replaceExt(in, ".pdf"))
 	if !bytes.HasPrefix(data, []byte("%PDF")) {
@@ -99,8 +106,8 @@ func TestRunPDFTableFirst(t *testing.T) {
 
 func TestRunMultipleFormats(t *testing.T) {
 	in := writeInput(t)
-	if err := Run([]string{"-f", "pdf,html", in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "pdf,html", in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	for _, ext := range []string{".pdf", ".html"} {
 		out := replaceExt(in, ext)
@@ -121,8 +128,8 @@ func TestRunMergeMultipleInputs(t *testing.T) {
 	if err := os.WriteFile(b, []byte("# Second\n\nsecond body\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"-f", "html", a, b}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "html", a, b}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 
 	// -o is omitted, so the merged output takes the first input's basename.
@@ -170,8 +177,8 @@ func TestRunMergeResolvesImagesPerFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Run([]string{"-f", "html", a, b}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "html", a, b}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 
 	data := readFile(t, replaceExt(a, ".html"))
@@ -186,7 +193,7 @@ func TestRunMergeResolvesImagesPerFile(t *testing.T) {
 // An unknown format must fail fast, before any output is written.
 func TestRunUnknownFormat(t *testing.T) {
 	in := writeInput(t)
-	err := Run([]string{"-f", "html,bogus", in}, "test")
+	err := run([]string{"-f", "html,bogus", in})
 	if err == nil {
 		t.Fatal("expected error for unknown format, got nil")
 	}
@@ -200,8 +207,8 @@ func TestRunUnknownFormat(t *testing.T) {
 // flatten code path in CI.
 func TestRunFlattenNoDiagrams(t *testing.T) {
 	in := writeInput(t)
-	if err := Run([]string{"-f", "html", "-flatten", in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-f", "html", "-flatten", in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	data := readFile(t, replaceExt(in, ".html"))
 	if !bytes.Contains(data, []byte("<h1")) {
@@ -212,8 +219,8 @@ func TestRunFlattenNoDiagrams(t *testing.T) {
 func TestRunFormatFromOutputExt(t *testing.T) {
 	in := writeInput(t)
 	out := filepath.Join(filepath.Dir(in), "custom.html")
-	if err := Run([]string{"-o", out, in}, "test"); err != nil {
-		t.Fatalf("Run: %v", err)
+	if err := run([]string{"-o", out, in}); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	data := readFile(t, out)
 	if !bytes.Contains(data, []byte("<h1")) {
@@ -221,20 +228,10 @@ func TestRunFormatFromOutputExt(t *testing.T) {
 	}
 }
 
-// withStdout swaps the package stdout writer for a buffer and restores it.
-func withStdout(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	prev := stdoutWriter
-	buf := &bytes.Buffer{}
-	stdoutWriter = buf
-	t.Cleanup(func() { stdoutWriter = prev })
-	return buf
-}
-
 func TestRunStdout(t *testing.T) {
 	in := writeInput(t)
-	buf := withStdout(t)
-	if err := Run([]string{"-f", "html", "-stdout", in}, "test"); err != nil {
+	var buf bytes.Buffer
+	if err := Run([]string{"-f", "html", "-stdout", in}, "test", &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
@@ -249,8 +246,8 @@ func TestRunStdout(t *testing.T) {
 func TestRunStdoutWithOutput(t *testing.T) {
 	in := writeInput(t)
 	out := filepath.Join(filepath.Dir(in), "custom.html")
-	buf := withStdout(t)
-	if err := Run([]string{"-o", out, "-stdout", in}, "test"); err != nil {
+	var buf bytes.Buffer
+	if err := Run([]string{"-o", out, "-stdout", in}, "test", &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
@@ -277,15 +274,16 @@ func TestRunErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := Run(tt.args, "test"); err == nil {
-				t.Errorf("Run(%v): expected error, got nil", tt.args)
+			if err := run(tt.args); err == nil {
+				t.Errorf("run(%v): expected error, got nil", tt.args)
 			}
 		})
 	}
 }
 
 func TestRunVersion(t *testing.T) {
-	if err := Run([]string{"-version"}, "1.2.3"); err != nil {
+	var buf bytes.Buffer
+	if err := Run([]string{"-version"}, "1.2.3", &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 }

@@ -23,14 +23,11 @@ import (
 	_ "github.com/rapatao/md2/internal/converter/text"
 )
 
-// stdoutWriter is where -stdout streams the converted result. It is a package
-// variable so tests can capture the output.
-var stdoutWriter io.Writer = os.Stdout
-
 // Run parses args and performs the requested conversion(s). version is
 // printed for -version and is resolved by the caller (main), which alone
-// knows about build-time ldflags.
-func Run(args []string, version string) error {
+// knows about build-time ldflags. stdoutWriter is where -stdout streams the
+// converted result (typically os.Stdout; tests pass a buffer).
+func Run(args []string, version string, stdoutWriter io.Writer) error {
 	var (
 		output        string
 		format        string
