@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/rapatao/md2/internal/converter"
+	"github.com/rapatao/md2/internal/urlref"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -197,7 +198,7 @@ func inlineLocalImages(doc []byte, baseDir string) []byte {
 	return imgSrcRe.ReplaceAllFunc(doc, func(m []byte) []byte {
 		g := imgSrcRe.FindSubmatch(m)
 		src := string(g[2])
-		if src == "" || strings.HasPrefix(src, "data:") || hasURLScheme(src) {
+		if src == "" || strings.HasPrefix(src, "data:") || urlref.HasScheme(src) {
 			return m
 		}
 
@@ -213,23 +214,6 @@ func inlineLocalImages(doc []byte, baseDir string) []byte {
 		uri := "data:" + imageMIME(path) + ";base64," + base64.StdEncoding.EncodeToString(data)
 		return append(append(append([]byte(nil), g[1]...), uri...), g[3]...)
 	})
-}
-
-// hasURLScheme reports whether s starts with a URL scheme (e.g. "https:") or is
-// protocol-relative ("//host/..."), i.e. a non-local reference.
-func hasURLScheme(s string) bool {
-	if strings.HasPrefix(s, "//") {
-		return true
-	}
-	if i := strings.IndexByte(s, ':'); i > 0 {
-		for _, r := range s[:i] {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.') {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
 
 // imageMIME guesses an image MIME type from a file extension, defaulting to PNG.
