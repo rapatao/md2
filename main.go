@@ -2,11 +2,15 @@
 //
 // Usage:
 //
-//	md2 [-o output] [-f format] input.md
+//	md2 [-o output] [-f format] input.md [input2.md ...]
 //
-// If -o is omitted, the output filename is the input with its extension
-// replaced by the format. If -f is omitted, the format is inferred from the
-// output extension, defaulting to pdf.
+// With more than one input file, they are concatenated in the order given
+// into a single document before conversion. Each file's relative image
+// references are resolved against its own directory.
+//
+// If -o is omitted, the output filename is the (first) input with its
+// extension replaced by the format. If -f is omitted, the format is inferred
+// from the output extension, defaulting to pdf.
 //
 // With -stdout the converted result is written to standard output instead of a
 // file (single format only); pass -o as well to also write the file.
@@ -20,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -92,12 +97,11 @@ func run(args []string) error {
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
 	chrome.Consent = consentFunc(allowDownload)
 
-	rest := fs.Args()
-	if len(rest) != 1 {
+	inputs := fs.Args()
+	if len(inputs) < 1 {
 		fs.Usage()
-		return fmt.Errorf("expected exactly one input file, got %d", len(rest))
+		return fmt.Errorf("expected at least one input file, got %d", len(inputs))
 	}
-	input := rest[0]
 
 	// Resolve formats: explicit -f (comma list) > output extension > default pdf.
 	formats := parseList(format)
@@ -133,27 +137,29 @@ func run(args []string) error {
 
 	// Resolve every output path up front. The format key doubles as the file
 	// extension, and -f deduplicates, so distinct formats never collide.
+	// With multiple inputs, the first one names the merged output.
 	dsts := make([]string, len(formats))
 	for i, format := range formats {
 		dst := output
 		if dst == "" {
-			base := strings.TrimSuffix(input, filepath.Ext(input))
+			base := strings.TrimSuffix(inputs[0], filepath.Ext(inputs[0]))
 			dst = base + "." + format
 		}
 		dsts[i] = dst
 	}
 
-	src, err := os.ReadFile(input)
+	src, err := mergeInputs(inputs)
 	if err != nil {
-		return fmt.Errorf("read input: %w", err)
+		return err
 	}
+	srcPath := inputs[0]
 
 	// -stdout streams the (single) converted result to standard output. With -o
 	// it also writes the file; the "wrote" notice goes to stderr to keep the
 	// converted bytes on stdout uncorrupted.
 	if stdout {
 		var buf bytes.Buffer
-		if err := convert(convs[0], src, input, &buf); err != nil {
+		if err := convert(convs[0], src, srcPath, &buf); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		if output != "" {
@@ -174,7 +180,7 @@ func run(args []string) error {
 	for i := range formats {
 		dst := dsts[i]
 
-		if err := writeOutput(convs[i], src, input, dst); err != nil {
+		if err := writeOutput(convs[i], src, srcPath, dst); err != nil {
 			errs = append(errs, err)
 			fmt.Fprintf(os.Stderr, "md2: %v\n", err)
 			continue
@@ -236,6 +242,48 @@ func stdinIsTerminal() bool {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// mergeInputs reads and concatenates the given files, in order, into a single
+// markdown source separated by blank lines (forcing a fresh block boundary so
+// the last line of one file never merges into the first line of the next).
+// With more than one input, each file's relative image references are
+// rewritten to absolute paths against its own directory first, since the
+// merged document has no single directory to resolve them against.
+func mergeInputs(inputs []string) ([]byte, error) {
+	parts := make([][]byte, len(inputs))
+	for i, in := range inputs {
+		src, err := os.ReadFile(in)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", in, err)
+		}
+		if len(inputs) > 1 {
+			src = rewriteRelativeImagePaths(src, filepath.Dir(in))
+		}
+		parts[i] = bytes.TrimRight(src, "\n")
+	}
+	return bytes.Join(parts, []byte("\n\n")), nil
+}
+
+// mdImageRe matches a markdown image reference, capturing its opening
+// `![alt](`, its destination, and everything up to and including the closing
+// paren (an optional " title" plus ")").
+var mdImageRe = regexp.MustCompile(`(!\[[^\]]*\]\()([^)\s]+)([^)]*\))`)
+
+// rewriteRelativeImagePaths rewrites relative markdown image destinations to
+// absolute paths against baseDir, so they still resolve once concatenated
+// with files from other directories. URLs and already-absolute paths are
+// left untouched.
+func rewriteRelativeImagePaths(src []byte, baseDir string) []byte {
+	return mdImageRe.ReplaceAllFunc(src, func(m []byte) []byte {
+		g := mdImageRe.FindSubmatch(m)
+		dest := string(g[2])
+		if dest == "" || filepath.IsAbs(dest) || htmlconv.HasURLScheme(dest) {
+			return m
+		}
+		abs := filepath.Join(baseDir, filepath.FromSlash(dest))
+		return append(append(append([]byte(nil), g[1]...), abs...), g[3]...)
+	})
 }
 
 // writeOutput converts src and writes the result to a new file at path.

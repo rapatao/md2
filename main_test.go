@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -110,6 +111,79 @@ func TestRunMultipleFormats(t *testing.T) {
 	}
 }
 
+// Multiple inputs are concatenated in order into a single document.
+func TestRunMergeMultipleInputs(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+	if err := os.WriteFile(a, []byte("# First\n\nfirst body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("# Second\n\nsecond body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"-f", "html", a, b}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// -o is omitted, so the merged output takes the first input's basename.
+	data := readFile(t, replaceExt(a, ".html"))
+	if !bytes.Contains(data, []byte("First")) || !bytes.Contains(data, []byte("Second")) {
+		t.Errorf("merged output missing content from both inputs: %q", data)
+	}
+	firstIdx := bytes.Index(data, []byte("First"))
+	secondIdx := bytes.Index(data, []byte("Second"))
+	if firstIdx == -1 || secondIdx == -1 || firstIdx > secondIdx {
+		t.Errorf("merged output not in input order: %q", data)
+	}
+}
+
+// Each merged file's relative image references resolve against its own
+// directory, not the first file's.
+func TestRunMergeResolvesImagesPerFile(t *testing.T) {
+	png, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	aDir := filepath.Join(dir, "a")
+	bDir := filepath.Join(dir, "b")
+	if err := os.MkdirAll(aDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aDir, "fig.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bDir, "fig.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(aDir, "doc.md")
+	b := filepath.Join(bDir, "doc.md")
+	if err := os.WriteFile(a, []byte("# A\n\n![a](fig.png)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("# B\n\n![b](fig.png)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run([]string{"-f", "html", a, b}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	data := readFile(t, replaceExt(a, ".html"))
+	if n := bytes.Count(data, []byte("data:image/png;base64,")); n != 2 {
+		t.Errorf("expected both images embedded (2 data URIs), got %d: %q", n, data)
+	}
+	if bytes.Contains(data, []byte(`src="fig.png"`)) {
+		t.Errorf("an image was not resolved and embedded: %q", data)
+	}
+}
+
 // An unknown format must fail fast, before any output is written.
 func TestRunUnknownFormat(t *testing.T) {
 	in := writeInput(t)
@@ -200,7 +274,6 @@ func TestRunErrors(t *testing.T) {
 		{"stdout conflicts with multiple formats", []string{"-stdout", "-f", "pdf,html", in}},
 		{"unsupported format", []string{"-f", "docx", in}},
 		{"no input", []string{}},
-		{"too many inputs", []string{in, in}},
 		{"missing input file", []string{filepath.Join(t.TempDir(), "nope.md")}},
 	}
 	for _, tt := range tests {

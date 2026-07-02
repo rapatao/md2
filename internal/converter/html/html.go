@@ -197,7 +197,7 @@ func inlineLocalImages(doc []byte, baseDir string) []byte {
 	return imgSrcRe.ReplaceAllFunc(doc, func(m []byte) []byte {
 		g := imgSrcRe.FindSubmatch(m)
 		src := string(g[2])
-		if src == "" || strings.HasPrefix(src, "data:") || hasURLScheme(src) {
+		if src == "" || strings.HasPrefix(src, "data:") || HasURLScheme(src) {
 			return m
 		}
 
@@ -215,9 +215,9 @@ func inlineLocalImages(doc []byte, baseDir string) []byte {
 	})
 }
 
-// hasURLScheme reports whether s starts with a URL scheme (e.g. "https:") or is
+// HasURLScheme reports whether s starts with a URL scheme (e.g. "https:") or is
 // protocol-relative ("//host/..."), i.e. a non-local reference.
-func hasURLScheme(s string) bool {
+func HasURLScheme(s string) bool {
 	if strings.HasPrefix(s, "//") {
 		return true
 	}
