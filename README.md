@@ -173,17 +173,22 @@ graph TD; A-->B;
 ```d2
 x -> y
 ```
+
+```plantuml
+Alice -> Bob: hello
+```
 ````
 
 ```sh
 md2 -f html -render mermaid input.md            # enable mermaid (interactive)
 md2 -f html -render mermaid -flatten input.md   # diagrams as static images
 md2 -f html -render d2      input.md            # enable D2 (inline SVG)
+md2 -f html -render plantuml input.md           # enable PlantUML (server-rendered SVG)
 md2 -f pdf  -render all     input.md            # enable every supported renderer
 md2 -f html -render mermaid -keep-diagram-source input.md  # rendered diagram + its source
 ```
 
-Two renderers are supported, with different rendering models:
+Three renderers are supported, with different rendering models:
 
 - **`mermaid`** renders *client-side*. In **HTML**, the
   [mermaid](https://mermaid.js.org) library is inlined into the output (no
@@ -204,6 +209,15 @@ Two renderers are supported, with different rendering models:
   rasterize SVG, a d2 block routes through the headless-browser engine like
   mermaid. A d2 block whose source fails to compile is left as a plain code block
   (with a warning on stderr) rather than failing the conversion.
+- **`plantuml`** ([PlantUML](https://plantuml.com)) renders *at conversion time*
+  by sending the encoded diagram source to a PlantUML server (public by default,
+  or a self-hosted one via `-plantuml-server`) and inlining the returned SVG, so
+  the output stays self-contained. PlantUML has no pure-Go renderer, so this is
+  the one renderer that reaches over the network — point `-plantuml-server` at a
+  private instance for offline or confidential diagrams. In **HTML** the SVG is
+  embedded inline (no browser); in **PDF** the block routes through the
+  headless-browser engine, as with mermaid and d2, since the pure-Go PDF renderer
+  cannot rasterize SVG.
 
 By default a rendered diagram replaces its source. Pass `-keep-diagram-source`
 to keep both: the rendered diagram is emitted first, immediately followed by the
@@ -212,8 +226,8 @@ original source as a code block.
 In **plain text** output, diagrams are not rendered — the source is kept as code.
 Files without a diagram are unaffected by any of the above.
 
-The `-render` flag is designed to take additional renderers (e.g. `plantuml`) in
-the future.
+The `-render` flag accepts any combination of the supported renderers, or `all`
+to enable every one, and is designed to take additional renderers in the future.
 
 ### Output naming
 
@@ -276,18 +290,26 @@ The CLI picks it up automatically — no other changes. It then works standalone
 ## Layout
 
 ```
-main.go                       CLI entry: arg parsing, format resolution, I/O
-                              (blank-imports each format package)
-flags.go                      flag set
-main_test.go                  parseFormats + run end-to-end tests
+main.go                       thin entry point: resolve version, call cli.Run
+internal/cli/
+  cli.go                      arg parsing, format/render resolution, I/O orchestration
+  flags.go                    flag set definition
 internal/converter/
   converter.go                Converter interface + format registry
-  converter_test.go           registry tests
   pdf/pdf.go                  markdown -> PDF: pure-Go first, browser fallback
   html/html.go                markdown -> styled HTML document (+ Render helper)
+  html/d2.go                  D2 diagrams -> inline SVG (in-process, pure Go)
+  html/plantuml.go            PlantUML diagrams -> inline SVG (via PlantUML server)
+  html/assets/                bundled mermaid.min.js inlined into HTML output
   text/text.go                markdown -> plain text (AST walker)
-  chrome/chrome.go            HTML -> PDF via headless browser (go-rod)
+  chrome/chrome.go            HTML -> PDF / diagram capture via headless browser (go-rod)
+internal/css/                 -css load, @import inlining, append to stylesheet
+internal/merge/               concatenate multiple input files into one document
+internal/urlref/              classify image/link references as local paths vs URLs
+internal/consent/             interactive prompt gating the Chromium download
 ```
+
+Each package has a matching `*_test.go` alongside it.
 
 ## Test
 
