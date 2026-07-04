@@ -111,6 +111,12 @@ var Flatten bool
 // an import cycle, hence this indirection.
 var Rasterizer func(doc []byte) ([]byte, error)
 
+// KeepDiagramSource, when true, keeps the original fenced diagram source in the
+// output in addition to the rendered diagram — the rendered diagram is emitted
+// first, immediately followed by the source as a normal code block. Off by
+// default (a diagram replaces its source). Set from the -keep-diagram-source flag.
+var KeepDiagramSource bool
+
 // ExtraCSS, when non-empty, is appended as an additional <style> block just
 // before </head>, after the built-in stylesheet, so it can override or
 // extend the defaults using normal CSS cascade rules — it never replaces the
@@ -353,7 +359,11 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 		w.WriteString(`<pre class="mermaid">`)
 		writeLines(w, source, n)
 		w.WriteString("</pre>\n")
-		return ast.WalkSkipChildren, nil
+		// With -keep-diagram-source, fall through to also render the source as a
+		// code block below (rendered diagram first, source second).
+		if !KeepDiagramSource {
+			return ast.WalkSkipChildren, nil
+		}
 	case "d2":
 		if svg, err := renderD2(rawLines(source, n)); err != nil {
 			// A broken diagram must not fail the whole conversion: warn and
@@ -363,7 +373,9 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 			w.WriteString(`<div class="d2">`)
 			w.Write(svg)
 			w.WriteString("</div>\n")
-			return ast.WalkSkipChildren, nil
+			if !KeepDiagramSource {
+				return ast.WalkSkipChildren, nil
+			}
 		}
 	case "plantuml":
 		if svg, err := renderPlantUML(rawLines(source, n)); err != nil {
@@ -374,7 +386,9 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 			w.WriteString(`<div class="plantuml">`)
 			w.Write(svg)
 			w.WriteString("</div>\n")
-			return ast.WalkSkipChildren, nil
+			if !KeepDiagramSource {
+				return ast.WalkSkipChildren, nil
+			}
 		}
 	}
 

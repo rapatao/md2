@@ -30,18 +30,19 @@ import (
 // converted result (typically os.Stdout; tests pass a buffer).
 func Run(args []string, version string, stdoutWriter io.Writer) error {
 	var (
-		output         string
-		format         string
-		render         string
-		cssPath        string
-		plantumlServer string
-		allowDownload  bool
-		flatten        bool
-		stdout         bool
-		showVersion    bool
+		output            string
+		format            string
+		render            string
+		cssPath           string
+		plantumlServer    string
+		allowDownload     bool
+		flatten           bool
+		keepDiagramSource bool
+		stdout            bool
+		showVersion       bool
 	)
 
-	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &stdout, &showVersion)
+	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &keepDiagramSource, &stdout, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -65,6 +66,10 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 	// -flatten renders HTML diagrams to static images rather than inlining
 	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
 	htmlconv.Flatten = flatten
+
+	// -keep-diagram-source keeps the original diagram source in the output in
+	// addition to the rendered diagram (rendered first, then the source block).
+	htmlconv.KeepDiagramSource = keepDiagramSource
 
 	// -css appends a user stylesheet after the built-in defaults in HTML
 	// output (and the browser-rendered PDF fallback); the pure-Go PDF path
