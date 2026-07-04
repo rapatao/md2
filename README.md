@@ -71,6 +71,7 @@ md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
+md2 -f html -render plantuml input.md          # render plantuml diagrams via a PlantUML server
 md2 -f html -css extra.css input.md  # append custom CSS after the built-in stylesheet
 md2 -o report.pdf input.md    # explicit output (format from extension)
 md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
@@ -81,8 +82,9 @@ Flags:
 
 - `-o` output file. Default: (first) input name with the format extension. Cannot be combined with multiple formats.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
-- `-render` diagram renderer(s) to enable, comma-separated (currently `mermaid`), or `all`. Default: none — diagrams render as plain code unless enabled.
+- `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).

@@ -43,8 +43,9 @@ import (
 // diagrams. Add new renderers (e.g. "plantuml") here together with their
 // rendering logic.
 var supportedDiagrams = map[string]bool{
-	"mermaid": true,
-	"d2":      true,
+	"mermaid":  true,
+	"d2":       true,
+	"plantuml": true,
 }
 
 // enabledDiagrams is the subset the user turned on via the CLI. It is empty by
@@ -360,6 +361,17 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 			fmt.Fprintf(os.Stderr, "md2: d2 render failed: %v\n", err)
 		} else {
 			w.WriteString(`<div class="d2">`)
+			w.Write(svg)
+			w.WriteString("</div>\n")
+			return ast.WalkSkipChildren, nil
+		}
+	case "plantuml":
+		if svg, err := renderPlantUML(rawLines(source, n)); err != nil {
+			// A server/network error must not fail the whole conversion: warn
+			// and fall through to render the block as plain code.
+			fmt.Fprintf(os.Stderr, "md2: plantuml render failed: %v\n", err)
+		} else {
+			w.WriteString(`<div class="plantuml">`)
 			w.Write(svg)
 			w.WriteString("</div>\n")
 			return ast.WalkSkipChildren, nil
