@@ -33,6 +33,27 @@ archives:
       - goos: windows
         formats: [zip]
 
+# Native Linux packages built from the compiled linux binaries and attached to
+# the GitHub Release. nfpm auto-skips non-linux builds, so this packages just
+# linux/amd64 and linux/arm64. No external repo/token needed.
+nfpms:
+  - id: md2
+    package_name: md2
+    ids:
+      - md2
+    formats:
+      - deb
+      - rpm
+      - apk
+    # Distro-conventional filenames (e.g. md2_1.2.3_amd64.deb,
+    # md2-1.2.3.x86_64.rpm, md2_1.2.3_x86_64.apk).
+    file_name_template: "{{ .ConventionalFileName }}"
+    maintainer: "Luiz Henrique Rapatao <rapatao@rapatao.com>"
+    homepage: "https://github.com/rapatao/md2"
+    description: "Convert markdown files to PDF, HTML, and text"
+    license: MIT
+    bindir: /usr/bin
+
 # Container images. Both variants are built per-arch from the already-compiled
 # binaries (no in-image compile), then combined into multi-arch manifests.
 #   :latest / :<version>       full  — Debian + Chromium, every feature works
