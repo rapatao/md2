@@ -1,0 +1,5 @@
+# The images only need the prebuilt md2 binary (goreleaser supplies it; for a
+# local `docker build .` run `go build -o md2 .` first). Keep the build context
+# tiny and avoid copying the repo or .git.
+*
+!md2

@@ -42,6 +42,28 @@ Or build locally:
 go build -o md2 .
 ```
 
+**Docker** (multi-arch, `linux/amd64` + `linux/arm64`, published to GHCR):
+
+md2 reads input from file paths and writes output next to the input (or to
+`-stdout`), so mount your working directory and run from it:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/rapatao/md2 input.md               # writes input.pdf
+docker run --rm -v "$PWD:/work" ghcr.io/rapatao/md2 -f html -stdout input.md > out.html
+docker run --rm -v "$PWD:/work" ghcr.io/rapatao/md2 -f html -render mermaid -flatten input.md
+```
+
+The default image bundles Chromium, so every feature works — including
+browser-fallback PDF, mermaid rendering, and `-flatten`. A smaller `:slim`
+variant omits the browser and covers HTML, txt, D2, PlantUML, and pure-Go PDF
+only; mermaid, `-flatten`, and the browser PDF fallback are unavailable there:
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/rapatao/md2:slim -f html input.md
+```
+
+Tags: `latest` and `<version>` (full), `slim` and `<version>-slim` (minimal).
+
 ## Verifying a release
 
 Each release publishes `checksums.txt` plus a keyless [cosign](https://github.com/sigstore/cosign)
