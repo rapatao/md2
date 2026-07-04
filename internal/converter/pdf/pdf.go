@@ -17,6 +17,7 @@ import (
 	"github.com/rapatao/md2/internal/converter/chrome"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 	"github.com/rapatao/md2/internal/merge"
+	"github.com/alecthomas/chroma/v2/styles"
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -88,6 +89,10 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 	opts := []gpdf.Option{
 		gpdf.WithContext(ctx),
 		gpdf.WithPDF(doc),
+		// Highlight code blocks with the same "github" chroma style the HTML
+		// path uses, rather than goldmark-pdf's default "monokai", so output is
+		// consistent across the pure-Go and browser-rendered paths.
+		gpdf.WithCodeBlockTheme(styles.Get("github")),
 	}
 	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
 	// only resolve when md2 happens to run from the input file's directory.

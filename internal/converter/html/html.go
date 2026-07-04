@@ -24,6 +24,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alecthomas/chroma/v2"
+	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/urlref"
 	"github.com/yuin/goldmark"
@@ -114,6 +118,20 @@ var Rasterizer func(doc []byte) ([]byte, error)
 // has no HTML/CSS layer. Set from the -css CLI flag.
 var ExtraCSS string
 
+// highlightStyle is the chroma theme used to color fenced code blocks. "github"
+// is light, so it blends with the light HTML document. The pure-Go PDF path
+// (internal/converter/pdf) uses the same style for consistent output.
+var highlightStyle = styles.Get("github")
+
+// highlightFormatter emits chroma tokens as class-based <span>s. Classes (not
+// inline styles) keep the output compact and let -css recolor tokens via the
+// cascade. PreventSurroundingPre lets renderFencedCodeBlock keep writing its own
+// <pre><code> wrapper and inject only the colored spans inside.
+var highlightFormatter = chromahtml.New(
+	chromahtml.WithClasses(true),
+	chromahtml.PreventSurroundingPre(true),
+)
+
 // Converter renders markdown source to an HTML document.
 type Converter struct{}
 
@@ -163,13 +181,14 @@ func Render(src []byte) ([]byte, error) {
 // diagrams, the mermaid library and an init script are inlined so the diagrams
 // render without any network access.
 func RenderFrom(src []byte, baseDir string) ([]byte, error) {
+	dr := &diagramRenderer{}
 	md := goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
 		// Generate GitHub-style id attributes on headings so in-document links
 		// like [x](#my-section) resolve to the heading.
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(&diagramRenderer{}, 10)),
+			renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
 		),
 	)
 
@@ -187,6 +206,13 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 
 	var out bytes.Buffer
 	out.WriteString(docHeadOpen)
+	// Inject the chroma stylesheet only when a block was actually highlighted,
+	// before any ExtraCSS so -css can override highlight colors via the cascade.
+	if dr.highlighted {
+		out.WriteString("<style>\n")
+		_ = highlightFormatter.WriteCSS(&out, highlightStyle)
+		out.WriteString("</style>\n")
+	}
 	if ExtraCSS != "" {
 		out.WriteString("<style>\n")
 		// RenderFrom's goldmark instance never sets WithUnsafe, so raw HTML in
@@ -302,9 +328,14 @@ func containsEnabledDiagram(doc ast.Node, src []byte, lang string) bool {
 // diagramRenderer overrides fenced-code-block rendering for enabled diagram
 // languages: a `mermaid` block becomes <pre class="mermaid"> (which the mermaid
 // library turns into SVG client-side), while a `d2` block is compiled to SVG
-// in-process and inlined directly. Every other code block keeps goldmark's
-// default <pre><code> output.
-type diagramRenderer struct{}
+// in-process and inlined directly. Every other code block with a known language
+// is syntax-highlighted via chroma; unlabeled or unknown-language blocks keep
+// goldmark's default <pre><code> output.
+type diagramRenderer struct {
+	// highlighted records whether any code block was syntax-highlighted, so
+	// RenderFrom knows to inline the chroma stylesheet.
+	highlighted bool
+}
 
 func (r *diagramRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(ast.KindFencedCodeBlock, r.renderFencedCodeBlock)
@@ -335,6 +366,16 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 		}
 	}
 
+	// A block with a language chroma recognizes is syntax-highlighted. Unknown
+	// or unlabeled languages fall through to plain <pre><code>.
+	if lang := string(n.Language(source)); lang != "" {
+		if lexer := lexers.Get(lang); lexer != nil {
+			if r.highlightCode(w, source, n, lang, lexer) {
+				return ast.WalkSkipChildren, nil
+			}
+		}
+	}
+
 	w.WriteString("<pre><code")
 	if lang := n.Language(source); lang != nil {
 		w.WriteString(` class="language-`)
@@ -345,6 +386,31 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 	writeLines(w, source, n)
 	w.WriteString("</code></pre>\n")
 	return ast.WalkSkipChildren, nil
+}
+
+// highlightCode syntax-highlights a code block with chroma, writing
+// <pre class="chroma language-<lang>"><code> plus class-based token spans. It
+// returns true on success; on any tokenize/format error it warns to stderr and
+// returns false so the caller falls back to plain rendering — a lexer glitch
+// must never fail the whole conversion.
+func (r *diagramRenderer) highlightCode(w util.BufWriter, source []byte, n ast.Node, lang string, lexer chroma.Lexer) bool {
+	iterator, err := chroma.Coalesce(lexer).Tokenise(nil, string(rawLines(source, n)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "md2: highlight failed for %q: %v\n", lang, err)
+		return false
+	}
+	w.WriteString(`<pre class="chroma"><code class="language-`)
+	htmlEscaper.WriteString(w, lang)
+	w.WriteString(`">`)
+	if err := highlightFormatter.Format(w, highlightStyle, iterator); err != nil {
+		// The <pre><code> prefix is already written, but returning false here
+		// would double-render; the block is effectively plain on error, which is
+		// acceptable and rare. Warn and finish the wrapper.
+		fmt.Fprintf(os.Stderr, "md2: highlight failed for %q: %v\n", lang, err)
+	}
+	w.WriteString("</code></pre>\n")
+	r.highlighted = true
+	return true
 }
 
 // writeLines writes a code block's raw lines, HTML-escaped.
