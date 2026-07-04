@@ -271,6 +271,71 @@ func TestRenderD2Enabled(t *testing.T) {
 	}
 }
 
+// keepDiagramSource turns on -keep-diagram-source for one test and resets the
+// global afterwards.
+func keepDiagramSource(t *testing.T) {
+	t.Helper()
+	KeepDiagramSource = true
+	t.Cleanup(func() { KeepDiagramSource = false })
+}
+
+func TestRenderMermaidKeepSource(t *testing.T) {
+	enableMermaid(t)
+	keepDiagramSource(t)
+	out, err := Render([]byte(mermaidDoc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+
+	rendered := strings.Index(s, `<pre class="mermaid">`)
+	if rendered < 0 {
+		t.Fatalf("mermaid diagram not rendered:\n%s", s)
+	}
+	source := strings.Index(s, `class="language-mermaid"`)
+	if source < 0 {
+		t.Fatalf("mermaid source block not kept:\n%s", s)
+	}
+	// The rendered diagram must come before the source block.
+	if rendered > source {
+		t.Errorf("mermaid source appears before the rendered diagram (rendered=%d source=%d)", rendered, source)
+	}
+}
+
+func TestRenderD2KeepSource(t *testing.T) {
+	enableD2(t)
+	keepDiagramSource(t)
+	out, err := Render([]byte(d2Doc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+
+	rendered := strings.Index(s, `<div class="d2">`)
+	if rendered < 0 {
+		t.Fatalf("d2 diagram not rendered:\n%s", s)
+	}
+	source := strings.Index(s, `class="language-d2"`)
+	if source < 0 {
+		t.Fatalf("d2 source block not kept:\n%s", s)
+	}
+	if rendered > source {
+		t.Errorf("d2 source appears before the rendered diagram (rendered=%d source=%d)", rendered, source)
+	}
+}
+
+func TestRenderMermaidNoKeepSourceByDefault(t *testing.T) {
+	enableMermaid(t)
+	out, err := Render([]byte(mermaidDoc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	// Without the flag, the source must not survive alongside the diagram.
+	if strings.Contains(string(out), `class="language-mermaid"`) {
+		t.Errorf("mermaid source kept without -keep-diagram-source:\n%s", out)
+	}
+}
+
 func TestRenderD2InvalidFallsBack(t *testing.T) {
 	enableD2(t)
 	// Unbalanced braces make the d2 compiler fail; the block must degrade to a

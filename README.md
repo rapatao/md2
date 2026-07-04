@@ -84,6 +84,7 @@ Flags:
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-keep-diagram-source` keep the original diagram source in the output in addition to the rendered diagram: the rendered diagram is emitted first, immediately followed by the source as a code block. Default: off — a diagram replaces its source.
 - `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
@@ -144,6 +145,7 @@ md2 -f html -render mermaid input.md            # enable mermaid (interactive)
 md2 -f html -render mermaid -flatten input.md   # diagrams as static images
 md2 -f html -render d2      input.md            # enable D2 (inline SVG)
 md2 -f pdf  -render all     input.md            # enable every supported renderer
+md2 -f html -render mermaid -keep-diagram-source input.md  # rendered diagram + its source
 ```
 
 Two renderers are supported, with different rendering models:
@@ -167,6 +169,10 @@ Two renderers are supported, with different rendering models:
   rasterize SVG, a d2 block routes through the headless-browser engine like
   mermaid. A d2 block whose source fails to compile is left as a plain code block
   (with a warning on stderr) rather than failing the conversion.
+
+By default a rendered diagram replaces its source. Pass `-keep-diagram-source`
+to keep both: the rendered diagram is emitted first, immediately followed by the
+original source as a code block.
 
 In **plain text** output, diagrams are not rendered — the source is kept as code.
 Files without a diagram are unaffected by any of the above.
