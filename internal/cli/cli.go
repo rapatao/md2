@@ -30,17 +30,18 @@ import (
 // converted result (typically os.Stdout; tests pass a buffer).
 func Run(args []string, version string, stdoutWriter io.Writer) error {
 	var (
-		output        string
-		format        string
-		render        string
-		cssPath       string
-		allowDownload bool
-		flatten       bool
-		stdout        bool
-		showVersion   bool
+		output         string
+		format         string
+		render         string
+		cssPath        string
+		plantumlServer string
+		allowDownload  bool
+		flatten        bool
+		stdout         bool
+		showVersion    bool
 	)
 
-	fs := flagSet(&output, &format, &render, &cssPath, &allowDownload, &flatten, &stdout, &showVersion)
+	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &stdout, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,6 +54,12 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 	// Enable any diagram renderers requested via -render. Off by default.
 	if err := htmlconv.EnableDiagrams(parseList(render)); err != nil {
 		return err
+	}
+
+	// -plantuml-server points the plantuml renderer at a PlantUML server; an
+	// empty value keeps the built-in default (the public plantuml.com server).
+	if plantumlServer != "" {
+		htmlconv.PlantUMLServer = plantumlServer
 	}
 
 	// -flatten renders HTML diagrams to static images rather than inlining

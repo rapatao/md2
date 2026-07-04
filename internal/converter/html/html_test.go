@@ -2,6 +2,10 @@ package html
 
 import (
 	"bytes"
+	"compress/flate"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,10 +202,10 @@ func TestRequiresBrowser(t *testing.T) {
 
 func TestEnableDiagramsUnknown(t *testing.T) {
 	t.Cleanup(func() { enabledDiagrams = map[string]bool{} })
-	if err := EnableDiagrams([]string{"plantuml"}); err == nil {
+	if err := EnableDiagrams([]string{"graphviz"}); err == nil {
 		t.Error("expected error for unknown renderer, got nil")
 	}
-	if enabledDiagrams["plantuml"] {
+	if enabledDiagrams["graphviz"] {
 		t.Error("unknown renderer was enabled despite error")
 	}
 }
@@ -459,4 +463,147 @@ func TestRenderHighlightCSSBeforeExtraCSS(t *testing.T) {
 	if extra < hi {
 		t.Errorf("extra CSS must come after highlight stylesheet (cascade), got extra=%d highlight=%d", extra, hi)
 	}
+}
+
+const plantumlDoc = "# Diagram\n\n```plantuml\n@startuml\nAlice -> Bob: hi\n@enduml\n```\n"
+
+// enablePlantUML turns plantuml rendering on for one test and resets the global
+// enabled set afterwards.
+func enablePlantUML(t *testing.T) {
+	t.Helper()
+	if err := EnableDiagrams([]string{"plantuml"}); err != nil {
+		t.Fatalf("EnableDiagrams: %v", err)
+	}
+	t.Cleanup(func() { enabledDiagrams = map[string]bool{} })
+}
+
+// setPlantUMLServer points the renderer at url for one test and restores the
+// default afterwards.
+func setPlantUMLServer(t *testing.T, url string) {
+	t.Helper()
+	prev := PlantUMLServer
+	PlantUMLServer = url
+	t.Cleanup(func() { PlantUMLServer = prev })
+}
+
+func TestRenderPlantUMLDisabledByDefault(t *testing.T) {
+	out, err := Render([]byte(plantumlDoc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, `<div class="plantuml">`) {
+		t.Error("plantuml rendered while disabled")
+	}
+	if !strings.Contains(s, `<pre><code class="language-plantuml">`) {
+		t.Errorf("disabled plantuml not rendered as code block:\n%s", s)
+	}
+}
+
+func TestRenderPlantUMLEnabled(t *testing.T) {
+	enablePlantUML(t)
+
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg"><text>diagram</text></svg>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/svg/") {
+			t.Errorf("unexpected request path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		io.WriteString(w, `<?xml version="1.0"?>`+svg)
+	}))
+	defer srv.Close()
+	setPlantUMLServer(t, srv.URL)
+
+	out, err := Render([]byte(plantumlDoc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `<div class="plantuml">`) {
+		t.Errorf("plantuml output missing wrapper div:\n%s", s)
+	}
+	if !strings.Contains(s, svg) {
+		t.Errorf("plantuml output missing fetched svg:\n%s", s)
+	}
+	if strings.Contains(s, "<?xml") {
+		t.Errorf("xml prolog not stripped from inlined svg:\n%s", s)
+	}
+	if strings.Contains(s, `class="language-plantuml"`) {
+		t.Errorf("plantuml block left as raw code:\n%s", s)
+	}
+}
+
+func TestRenderPlantUMLServerErrorFallsBack(t *testing.T) {
+	enablePlantUML(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	setPlantUMLServer(t, srv.URL)
+
+	out, err := Render([]byte(plantumlDoc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, `<div class="plantuml">`) {
+		t.Error("server error unexpectedly produced a plantuml div")
+	}
+	if !strings.Contains(s, `<pre><code class="language-plantuml">`) {
+		t.Errorf("failed plantuml not rendered as code block:\n%s", s)
+	}
+}
+
+func TestRequiresBrowserPlantUML(t *testing.T) {
+	if RequiresBrowser([]byte(plantumlDoc)) {
+		t.Error("plantuml doc requires browser while disabled")
+	}
+	enablePlantUML(t)
+	if !RequiresBrowser([]byte(plantumlDoc)) {
+		t.Error("enabled plantuml doc should route to the browser for PDF")
+	}
+	// plantuml SVG is inline at load, so it needs no async mermaid wait.
+	if RequiresMermaidWait([]byte(plantumlDoc)) {
+		t.Error("plantuml doc should not require a mermaid wait")
+	}
+}
+
+func TestPlantumlEncode(t *testing.T) {
+	src := []byte("@startuml\nAlice -> Bob: hi\n@enduml")
+	enc := plantumlEncode(src)
+	if enc == "" {
+		t.Fatal("empty encoding")
+	}
+
+	deflated := decode64(t, enc)
+	got, err := io.ReadAll(flate.NewReader(bytes.NewReader(deflated)))
+	if err != nil {
+		t.Fatalf("inflate: %v", err)
+	}
+	if !bytes.Equal(got, src) {
+		t.Errorf("round-trip mismatch: got %q want %q", got, src)
+	}
+}
+
+// decode64 reverses encode64 for the round-trip test.
+func decode64(t *testing.T, s string) []byte {
+	t.Helper()
+	idx := func(c byte) int64 {
+		return int64(strings.IndexByte(plantumlAlphabet, c))
+	}
+	var out []byte
+	for i := 0; i < len(s); i += 4 {
+		var v int64
+		for j := 0; j < 4; j++ {
+			v = v << 6
+			if i+j < len(s) {
+				v |= idx(s[i+j])
+			}
+		}
+		out = append(out, byte(v>>16), byte(v>>8), byte(v))
+	}
+	// Trailing zero-padding bytes may appear; the flate reader stops at the
+	// stream end, so no trimming is needed here.
+	return out
 }
