@@ -1,0 +1,14 @@
+# Slim image: minimal distroless base, no Chromium. Opt-in (:slim tag).
+# Covers HTML, txt, in-process D2, PlantUML (remote server), and pure-Go PDF.
+# mermaid, -flatten, and browser-fallback PDF are unavailable and return the
+# "download not authorized" error — use the default (:latest) image for those.
+#
+# distroless static ships CA certificates (needed for the PlantUML TLS fetch)
+# and tzdata. The root variant is used so writing output files to a mounted
+# /work does not hit uid-65532 permission surprises; pass --user to harden.
+FROM gcr.io/distroless/static-debian12
+
+COPY md2 /usr/local/bin/md2
+
+WORKDIR /work
+ENTRYPOINT ["md2"]
