@@ -6,8 +6,8 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 
 Currently supported:
 
-- **PDF** (`.pdf`)
-- **HTML** (`.html`) — self-contained; local images embedded as data URIs. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
+- **PDF** (`.pdf`) — syntax-highlighted code blocks
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs; syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
 
 ## Install
@@ -108,6 +108,19 @@ No Chrome/Chromium found. Download Chromium (~150MB) to render the PDF? [y/N]:
 
 On a non-interactive terminal it declines unless `-allow-download` is passed.
 Simple documents never launch a browser.
+
+## Syntax highlighting
+
+Fenced code blocks with a language tag (e.g. ` ```go `, ` ```js `) are
+syntax-highlighted automatically — no flag needed — using
+[chroma](https://github.com/alecthomas/chroma) with the light `github` theme.
+Highlighting is applied to **HTML** (colors inlined as a self-contained
+stylesheet) and to **PDF** (both the pure-Go and browser-rendered engines).
+Blocks with no language, or a language chroma does not recognize, are left as
+plain code.
+
+Because the HTML colors are emitted as CSS classes, `-css` can recolor tokens
+via the cascade — e.g. `.chroma .k { color: #b00 }` restyles keywords.
 
 ## Diagrams
 

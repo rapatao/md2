@@ -388,3 +388,75 @@ func TestImageMIME(t *testing.T) {
 		}
 	}
 }
+
+// A fenced block tagged with a chroma-known language is syntax-highlighted:
+// token spans plus a single inlined chroma stylesheet.
+func TestRenderHighlightsKnownLanguage(t *testing.T) {
+	out, err := Render([]byte("```go\nfunc main() {}\n```\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`<pre class="chroma"><code class="language-go"><span`, // highlighted wrapper + token spans
+		".chroma {", // generated highlight stylesheet inlined
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("highlighted output missing %q:\n%s", want, s)
+		}
+	}
+}
+
+// An unlabeled fenced block is not highlighted and no chroma stylesheet is
+// emitted.
+func TestRenderNoLanguageStaysPlain(t *testing.T) {
+	out, err := Render([]byte("```\nplain text\n```\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "<pre><code>") {
+		t.Errorf("unlabeled block should stay plain <pre><code>:\n%s", s)
+	}
+	if strings.Contains(s, "chroma") {
+		t.Errorf("unlabeled block must not emit chroma output:\n%s", s)
+	}
+	if n := strings.Count(s, "<style>"); n != 1 {
+		t.Errorf("expected exactly 1 <style> block (built-in only), got %d:\n%s", n, s)
+	}
+}
+
+// A block tagged with a language chroma does not know stays plain, keeping its
+// language- class, with no highlight stylesheet.
+func TestRenderUnknownLanguageStaysPlain(t *testing.T) {
+	out, err := Render([]byte("```notalang\nsome code\n```\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `<pre><code class="language-notalang">`) {
+		t.Errorf("unknown language should stay plain with language class:\n%s", s)
+	}
+	if strings.Contains(s, "chroma") {
+		t.Errorf("unknown language must not emit chroma output:\n%s", s)
+	}
+}
+
+// -css is inlined after the highlight stylesheet so it can override token
+// colors via the cascade.
+func TestRenderHighlightCSSBeforeExtraCSS(t *testing.T) {
+	setExtraCSS(t, ".chroma .k{color:hotpink}")
+	out, err := Render([]byte("```go\nfunc main() {}\n```\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	hi := strings.Index(s, ".chroma {")
+	extra := strings.Index(s, ".chroma .k{color:hotpink}")
+	if hi < 0 || extra < 0 {
+		t.Fatalf("expected both highlight and extra CSS present:\n%s", s)
+	}
+	if extra < hi {
+		t.Errorf("extra CSS must come after highlight stylesheet (cascade), got extra=%d highlight=%d", extra, hi)
+	}
+}
