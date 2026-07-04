@@ -13,11 +13,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/chrome"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 	"github.com/rapatao/md2/internal/merge"
-	"github.com/alecthomas/chroma/v2/styles"
 	gpdf "github.com/stephenafamo/goldmark-pdf"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
