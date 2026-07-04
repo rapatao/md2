@@ -30,6 +30,19 @@ nix profile install github:rapatao/md2     # install into your profile
 is signed (keyless, via [cosign](https://github.com/sigstore/cosign)) — see
 [Verifying a release](#verifying-a-release).
 
+**Linux packages** (`.deb` / `.rpm` / `.apk`): download the package matching
+your distro and arch from the
+[latest release](https://github.com/rapatao/md2/releases/latest), then install
+it:
+
+```sh
+sudo dpkg -i md2_*_amd64.deb                       # Debian/Ubuntu
+sudo rpm -i md2-*.x86_64.rpm                        # Fedora/RHEL/openSUSE
+sudo apk add --allow-untrusted md2_*_x86_64.apk    # Alpine
+```
+
+(`--allow-untrusted` because the `.apk` is not signed with an apk repo key.)
+
 **Go**:
 
 ```sh
