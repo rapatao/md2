@@ -40,6 +40,7 @@ import (
 // rendering logic.
 var supportedDiagrams = map[string]bool{
 	"mermaid": true,
+	"d2":      true,
 }
 
 // enabledDiagrams is the subset the user turned on via the CLI. It is empty by
@@ -168,7 +169,7 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 		// like [x](#my-section) resolve to the heading.
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(&mermaidRenderer{}, 10)),
+			renderer.WithNodeRenderers(util.Prioritized(&diagramRenderer{}, 10)),
 		),
 	)
 
@@ -252,11 +253,30 @@ func imageMIME(path string) string {
 	}
 }
 
-// RequiresBrowser reports whether rendering the source needs a headless
-// browser — i.e. it contains an enabled diagram that renders via client-side
-// JavaScript. The PDF renderer uses it to skip the pure-Go path (which cannot
-// run JavaScript) in favour of the browser. Currently only mermaid qualifies.
+// RequiresBrowser reports whether rendering the source to PDF needs the
+// headless browser rather than the pure-Go renderer (goldmark-pdf), because it
+// contains an enabled diagram the pure-Go path cannot produce: mermaid needs a
+// client-side JS runtime, and d2 renders to inline SVG that gofpdf cannot
+// rasterize. Either way the browser draws it faithfully. The PDF renderer uses
+// this to choose its path; -flatten uses it to decide a document needs the
+// rasterizer.
 func RequiresBrowser(src []byte) bool {
+	doc := goldmark.New(goldmark.WithExtensions(extension.GFM)).
+		Parser().Parse(text.NewReader(src))
+	for lang := range enabledDiagrams {
+		if containsEnabledDiagram(doc, src, lang) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequiresMermaidWait reports whether the source contains an enabled mermaid
+// diagram, which the browser must draw asynchronously (via the inlined mermaid
+// script) before the PDF is printed. It is distinct from RequiresBrowser: a d2
+// diagram routes through the browser too, but its SVG is already in the DOM at
+// load, so there is nothing to wait for.
+func RequiresMermaidWait(src []byte) bool {
 	doc := goldmark.New(goldmark.WithExtensions(extension.GFM)).
 		Parser().Parse(text.NewReader(src))
 	return containsEnabledDiagram(doc, src, "mermaid")
@@ -279,27 +299,40 @@ func containsEnabledDiagram(doc ast.Node, src []byte, lang string) bool {
 	return found
 }
 
-// mermaidRenderer overrides fenced-code-block rendering so enabled mermaid
-// blocks become <pre class="mermaid"> (which the mermaid library turns into
-// SVG), while every other code block keeps goldmark's default <pre><code>
-// output.
-type mermaidRenderer struct{}
+// diagramRenderer overrides fenced-code-block rendering for enabled diagram
+// languages: a `mermaid` block becomes <pre class="mermaid"> (which the mermaid
+// library turns into SVG client-side), while a `d2` block is compiled to SVG
+// in-process and inlined directly. Every other code block keeps goldmark's
+// default <pre><code> output.
+type diagramRenderer struct{}
 
-func (r *mermaidRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+func (r *diagramRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 	reg.Register(ast.KindFencedCodeBlock, r.renderFencedCodeBlock)
 }
 
-func (r *mermaidRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
 	if !entering {
 		return ast.WalkContinue, nil
 	}
 	n := node.(*ast.FencedCodeBlock)
 
-	if enabledDiagramLang(n, source) == "mermaid" {
+	switch enabledDiagramLang(n, source) {
+	case "mermaid":
 		w.WriteString(`<pre class="mermaid">`)
 		writeLines(w, source, n)
 		w.WriteString("</pre>\n")
 		return ast.WalkSkipChildren, nil
+	case "d2":
+		if svg, err := renderD2(rawLines(source, n)); err != nil {
+			// A broken diagram must not fail the whole conversion: warn and
+			// fall through to render the block as plain code.
+			fmt.Fprintf(os.Stderr, "md2: d2 render failed: %v\n", err)
+		} else {
+			w.WriteString(`<div class="d2">`)
+			w.Write(svg)
+			w.WriteString("</div>\n")
+			return ast.WalkSkipChildren, nil
+		}
 	}
 
 	w.WriteString("<pre><code")
@@ -321,6 +354,18 @@ func writeLines(w util.BufWriter, source []byte, n ast.Node) {
 		seg := lines.At(i)
 		htmlEscaper.WriteString(w, string(seg.Value(source)))
 	}
+}
+
+// rawLines returns a code block's raw, unescaped content — the input a diagram
+// compiler needs (writeLines HTML-escapes, which would corrupt the source).
+func rawLines(source []byte, n ast.Node) []byte {
+	var buf bytes.Buffer
+	lines := n.Lines()
+	for i := 0; i < lines.Len(); i++ {
+		seg := lines.At(i)
+		buf.Write(seg.Value(source))
+	}
+	return buf.Bytes()
 }
 
 var htmlEscaper = strings.NewReplacer(

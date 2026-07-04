@@ -7,7 +7,7 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 Currently supported:
 
 - **PDF** (`.pdf`)
-- **HTML** (`.html`) — self-contained; local images embedded as data URIs. Diagrams render via inlined mermaid.js, or as static images with `-flatten` (e.g. for Google Docs import)
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
 
 ## Install
@@ -118,33 +118,46 @@ Without it, a diagram code block is rendered as plain code.
 ```mermaid
 graph TD; A-->B;
 ```
+
+```d2
+x -> y
+```
 ````
 
 ```sh
 md2 -f html -render mermaid input.md            # enable mermaid (interactive)
 md2 -f html -render mermaid -flatten input.md   # diagrams as static images
+md2 -f html -render d2      input.md            # enable D2 (inline SVG)
 md2 -f pdf  -render all     input.md            # enable every supported renderer
 ```
 
-When enabled:
+Two renderers are supported, with different rendering models:
 
-- **HTML** — by default the [mermaid](https://mermaid.js.org) library is inlined
-  into the output (no network access needed to view it), and the block renders
-  to SVG in the browser — interactive, but needing a JS runtime to display. With
-  `-flatten`, md2 renders the document in a headless browser and replaces each
-  diagram with a static PNG image, producing a self-contained file that displays
-  anywhere — including a Google Docs import (upload the `.html` to Drive, then
-  "Open with > Google Docs"), which runs no JavaScript.
-- **PDF** — a mermaid block forces the headless-browser engine (the pure-Go
-  renderer cannot run JavaScript), so the diagram is captured as vector graphics.
-- **Plain text** — no diagram; the mermaid source is kept as code.
+- **`mermaid`** renders *client-side*. In **HTML**, the
+  [mermaid](https://mermaid.js.org) library is inlined into the output (no
+  network access needed to view it) and the block renders to SVG in the browser
+  — interactive, but needing a JS runtime to display. With `-flatten`, md2
+  renders the document in a headless browser and replaces each diagram with a
+  static PNG image, producing a self-contained file that displays anywhere —
+  including a Google Docs import (upload the `.html` to Drive, then
+  "Open with > Google Docs"), which runs no JavaScript. In **PDF**, a mermaid
+  block forces the headless-browser engine (the pure-Go renderer cannot run
+  JavaScript), so the diagram is captured as vector graphics. Inlining the
+  library adds ~3 MB to each HTML file that contains a mermaid diagram;
+  `-flatten` avoids that.
+- **`d2`** ([D2](https://d2lang.com)) renders *at conversion time*, in-process
+  via the pure-Go D2 library — no JS runtime, no external binary. In **HTML** the
+  resulting SVG is embedded inline, so the output is self-contained and needs no
+  browser (no `-flatten`). In **PDF**, since the pure-Go PDF renderer cannot
+  rasterize SVG, a d2 block routes through the headless-browser engine like
+  mermaid. A d2 block whose source fails to compile is left as a plain code block
+  (with a warning on stderr) rather than failing the conversion.
 
-Inlining the library adds ~3 MB to each HTML file that contains a diagram;
-`-flatten` avoids that (the diagrams become images instead). Files without a
-diagram are unaffected either way.
+In **plain text** output, diagrams are not rendered — the source is kept as code.
+Files without a diagram are unaffected by any of the above.
 
-Currently only `mermaid` is supported; the `-render` flag is designed to take
-additional renderers (e.g. `plantuml`) in the future.
+The `-render` flag is designed to take additional renderers (e.g. `plantuml`) in
+the future.
 
 ### Output naming
 
@@ -174,7 +187,7 @@ merged output takes the *first* input's base name.
 | Format | Extension | Engine |
 |--------|-----------|--------|
 | `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
-| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js or, with `-flatten`, static PNGs (go-rod) |
+| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, static PNGs via go-rod) or in-process D2 inline SVG |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
 
 ## Adding a format

@@ -218,6 +218,96 @@ func TestEnableDiagramsAll(t *testing.T) {
 	}
 }
 
+const d2Doc = "# Diagram\n\n```d2\nx -> y\n```\n"
+
+// enableD2 turns d2 rendering on for one test and resets the global enabled set
+// afterwards.
+func enableD2(t *testing.T) {
+	t.Helper()
+	if err := EnableDiagrams([]string{"d2"}); err != nil {
+		t.Fatalf("EnableDiagrams: %v", err)
+	}
+	t.Cleanup(func() { enabledDiagrams = map[string]bool{} })
+}
+
+func TestRenderD2DisabledByDefault(t *testing.T) {
+	out, err := Render([]byte(d2Doc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "<svg") {
+		t.Error("d2 rendered while disabled")
+	}
+	if !strings.Contains(s, `<pre><code class="language-d2">`) {
+		t.Errorf("disabled d2 not rendered as code block:\n%s", s)
+	}
+}
+
+func TestRenderD2Enabled(t *testing.T) {
+	enableD2(t)
+	out, err := Render([]byte(d2Doc))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `<div class="d2">`) {
+		t.Errorf("d2 output missing wrapper div:\n%s", s)
+	}
+	if !strings.Contains(s, "<svg") {
+		t.Errorf("d2 output missing inline svg:\n%s", s)
+	}
+	// d2 renders in-process; no client-side mermaid runtime should be inlined.
+	if strings.Contains(s, "mermaid.run()") {
+		t.Error("mermaid script injected for a d2-only document")
+	}
+	// The raw d2 source must not survive as a code block.
+	if strings.Contains(s, `class="language-d2"`) {
+		t.Errorf("d2 block left as raw code:\n%s", s)
+	}
+}
+
+func TestRenderD2InvalidFallsBack(t *testing.T) {
+	enableD2(t)
+	// Unbalanced braces make the d2 compiler fail; the block must degrade to a
+	// plain code block rather than crash or fail the whole render.
+	out, err := Render([]byte("```d2\nx -> {\n```\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "<svg") {
+		t.Error("invalid d2 unexpectedly produced svg")
+	}
+	if !strings.Contains(s, `<pre><code class="language-d2">`) {
+		t.Errorf("invalid d2 not rendered as code block:\n%s", s)
+	}
+}
+
+func TestRequiresBrowserD2(t *testing.T) {
+	if RequiresBrowser([]byte(d2Doc)) {
+		t.Error("d2 doc requires browser while disabled")
+	}
+	enableD2(t)
+	if !RequiresBrowser([]byte(d2Doc)) {
+		t.Error("enabled d2 doc should route to the browser for PDF")
+	}
+	// d2 SVG is inline at load, so it needs no async mermaid wait.
+	if RequiresMermaidWait([]byte(d2Doc)) {
+		t.Error("d2 doc should not require the mermaid wait")
+	}
+}
+
+func TestRequiresMermaidWait(t *testing.T) {
+	enableMermaid(t)
+	if !RequiresMermaidWait([]byte(mermaidDoc)) {
+		t.Error("mermaid doc should require the mermaid wait")
+	}
+	if RequiresMermaidWait([]byte("no diagrams here\n")) {
+		t.Error("plain doc should not require the mermaid wait")
+	}
+}
+
 func TestConverterConvert(t *testing.T) {
 	var buf bytes.Buffer
 	if err := (Converter{}).Convert([]byte("# Hi\n"), &buf); err != nil {
