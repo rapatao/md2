@@ -84,7 +84,9 @@ func convertFrom(src []byte, baseDir string, w io.Writer) error {
 
 	// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
 	// before printing so the PDF captures the diagrams, not empty placeholders.
-	if htmlconv.RequiresBrowser(src) {
+	// d2 diagrams route through the browser too but are already inline SVG at
+	// load, so only mermaid needs the wait.
+	if htmlconv.RequiresMermaidWait(src) {
 		waitMermaid(page)
 	}
 
@@ -153,19 +155,23 @@ func Rasterize(doc []byte) ([]byte, error) {
 		return nil, fmt.Errorf("wait for page load: %w", err)
 	}
 
+	els, err := page.Elements("pre.mermaid")
+	if err != nil {
+		return nil, fmt.Errorf("find diagrams: %w", err)
+	}
+
 	// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
 	// before snapshotting so we capture the diagrams, not empty placeholders.
-	waitMermaid(page)
+	// A document without mermaid blocks (e.g. only d2, already inline SVG) has
+	// nothing to wait for, so skip the wait rather than eat its timeout.
+	if len(els) > 0 {
+		waitMermaid(page)
+	}
 
 	// Force a white page background so diagram snapshots carry an opaque white
 	// backdrop rather than transparency, keeping them legible wherever they land.
 	if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
 		return nil, fmt.Errorf("set background: %w", err)
-	}
-
-	els, err := page.Elements("pre.mermaid")
-	if err != nil {
-		return nil, fmt.Errorf("find diagrams: %w", err)
 	}
 	for _, el := range els {
 		png, err := snapshotDiagram(page, el)

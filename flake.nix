@@ -15,7 +15,7 @@
           pname = "md2";
           inherit version;
           src = ./.;
-          vendorHash = "sha256-6ZFEs7zWAVFTJ08UPEt3cAw8VRiEOjbtEEByI7E4UaU=";
+          vendorHash = "sha256-zqX3FkvZMNRzWDAnUkFtUbM6cNIcpYb6YNcvqAqoN+k=";
           ldflags = [ "-s" "-w" "-X" "main.version=${version}" ];
           # PDF browser fallback downloads Chromium at runtime; no build-time dep.
           doCheck = true;
