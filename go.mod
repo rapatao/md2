@@ -3,7 +3,7 @@ module github.com/rapatao/md2
 go 1.26.4
 
 require (
-	github.com/alecthomas/chroma/v2 v2.19.0
+	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/go-rod/rod v0.116.2
 	github.com/stephenafamo/goldmark-pdf v0.4.2
 	github.com/yuin/goldmark v1.8.2
@@ -16,6 +16,7 @@ require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/dop251/goja v0.0.0-20240927123429-241b342198c2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-swiss/fonts v0.0.0-20230807175105-90067c2f5042 // indirect
