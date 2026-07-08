@@ -492,7 +492,7 @@ const docHeadOpen = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <style>
-body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
+body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;margin:2rem;padding:0 1rem;color:#1a1a1a}
 h1,h2,h3,h4{line-height:1.25}
 table{border-collapse:collapse;width:100%;margin:1rem 0}
 th,td{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;vertical-align:top}
