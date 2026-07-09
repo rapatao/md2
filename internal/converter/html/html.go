@@ -591,12 +591,11 @@ window.__md2Mermaid=mermaid.run()
 </script>
 `
 
-const docHeadOpen = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<style>
-body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;margin:2rem;padding:0 1rem;color:#1a1a1a}
+// BaseCSS is md2's built-in stylesheet (readable body, bordered tables, code
+// blocks). It is embedded in the HTML document head and also reused by the EPUB
+// converter, which writes it to a packaged stylesheet so ebooks share the same
+// base look.
+const BaseCSS = `body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;margin:2rem;padding:0 1rem;color:#1a1a1a}
 h1,h2,h3,h4{line-height:1.25}
 table{border-collapse:collapse;width:100%;margin:1rem 0}
 th,td{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;vertical-align:top}
@@ -606,9 +605,33 @@ pre{background:#f4f4f4;padding:1rem;border-radius:6px;overflow:auto}
 pre code{background:none;padding:0}
 pre.mermaid{background:none;padding:0;text-align:center}
 blockquote{border-left:4px solid #ddd;margin:0;padding:.2rem 1rem;color:#555}
-img{max-width:100%}
+img{max-width:100%}`
+
+const docHeadOpen = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+` + BaseCSS + `
 </style>
 `
+
+// MermaidStandalonePage returns a minimal HTML document rendering a single
+// mermaid diagram client-side, for the EPUB rasterizer to load in a headless
+// browser and snapshot to a static image (an ebook reader has no JS runtime, so
+// mermaid must be pre-rendered to an image). The mermaid library and init
+// script are the same ones the HTML/PDF paths inline.
+func MermaidStandalonePage(source []byte) []byte {
+	var b bytes.Buffer
+	b.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8">` +
+		`<style>pre.mermaid{background:none;padding:0}</style></head><body>` +
+		`<pre class="mermaid">`)
+	htmlEscaper.WriteString(&b, string(source))
+	b.WriteString("</pre>")
+	b.WriteString(mermaidScript)
+	b.WriteString("</body></html>")
+	return b.Bytes()
+}
 
 const docHeadClose = `</head>
 <body>

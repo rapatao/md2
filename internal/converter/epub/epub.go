@@ -2,12 +2,19 @@
 // Importing it (for side effects) registers the "epub" format.
 //
 // The output is an OCF zip container: a stored "mimetype" entry, an OPF package
-// document, an EPUB3 navigation document, and one XHTML chapter holding the
-// whole document. The chapter is rendered by the html package's XHTMLBody — the
-// same pipeline as HTML output — so it shares syntax highlighting and diagram
-// rendering (d2/plantuml as static SVG; mermaid stays its source, as an ebook
-// reader has no JS runtime to draw it). XHTMLBody emits well-formed XHTML so the
-// chapter passes EPUB validators.
+// document, an EPUB3 navigation document, a stylesheet, and one XHTML chapter
+// holding the whole document. The chapter is rendered by the html package's
+// XHTMLBody — the same pipeline as HTML output — so it shares syntax
+// highlighting and d2/plantuml diagrams (inlined as static SVG). XHTMLBody emits
+// well-formed XHTML so the chapter passes EPUB validators, and the shared base
+// stylesheet (html.BaseCSS) plus the chroma highlight styles are written to a
+// packaged style.css so ebooks look like the HTML output.
+//
+// mermaid diagrams render client-side via JavaScript, which ebook readers do
+// not run, so each is pre-rendered to a static PNG in a headless browser (via
+// MermaidRasterizer, wired by the chrome package) and packaged as an image. When
+// no browser is available the diagram's source is left in place rather than
+// failing the conversion.
 //
 // Local images referenced by relative paths are packaged as real zip entries
 // under OEBPS/images/ and declared in the OPF manifest. Remote (http(s)://) and
@@ -71,8 +78,14 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 	}
 
 	title := firstHeading(src)
-	xhtml, images := packageImages(body, baseDir)
-	chapter := wrapChapter(title, css, string(xhtml))
+	body, images := packageImages(body, baseDir)
+	body, images = rasterizeMermaid(body, images)
+	chapter := wrapChapter(title, string(body))
+
+	stylesheet := html.BaseCSS
+	if css != "" {
+		stylesheet += "\n" + css
+	}
 
 	uid, err := newUUID()
 	if err != nil {
@@ -95,6 +108,7 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 		{"META-INF/container.xml", containerXML},
 		{"OEBPS/content.opf", opf(uid, title, images)},
 		{"OEBPS/nav.xhtml", navXHTML(title)},
+		{"OEBPS/style.css", stylesheet},
 		{"OEBPS/content.xhtml", chapter},
 	}
 	for _, f := range files {
@@ -171,6 +185,49 @@ func packageImages(xhtml []byte, baseDir string) ([]byte, []image) {
 			seen[path] = href
 		}
 		return append(append(append([]byte(nil), g[1]...), []byte(href)...), g[3]...)
+	})
+	return out, images
+}
+
+// MermaidRasterizer renders a mermaid diagram's source to a PNG. It is wired by
+// the chrome package (which owns the headless browser); nil when no browser
+// backend is linked, in which case mermaid diagrams keep their source. Mirrors
+// html.Rasterizer's inversion so epub does not import chrome.
+var MermaidRasterizer func(source []byte) ([]byte, error)
+
+// mermaidPreRe matches a rendered mermaid block: <pre class="mermaid">SOURCE</pre>.
+// html.XHTMLBody emits these (HTML-escaped source) for enabled mermaid diagrams.
+var mermaidPreRe = regexp.MustCompile(`(?s)<pre class="mermaid">(.*?)</pre>`)
+
+// rasterizeMermaid replaces each rendered mermaid block with a packaged PNG
+// <img>, since ebook readers cannot run mermaid's client-side script. Each
+// diagram's source is unescaped and rendered to a PNG via MermaidRasterizer,
+// added to images, and the <pre> swapped for an <img>. With no rasterizer
+// (no browser backend) or on a render error, the block is left as-is so its
+// source is at least visible and the conversion never fails.
+// ponytail: one browser launch per diagram (MermaidRasterizer opens its own
+// page). Fine for the handful of diagrams a doc has; batch into one page if a
+// mermaid-heavy doc ever makes it slow.
+func rasterizeMermaid(body []byte, images []image) ([]byte, []image) {
+	if MermaidRasterizer == nil {
+		return body, images
+	}
+	out := mermaidPreRe.ReplaceAllFunc(body, func(m []byte) []byte {
+		source := unescapeXML(string(mermaidPreRe.FindSubmatch(m)[1]))
+		png, err := MermaidRasterizer([]byte(source))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "md2: cannot render mermaid diagram: %v\n", err)
+			return m
+		}
+		n := len(images) + 1
+		href := fmt.Sprintf("images/dgm%d.png", n)
+		images = append(images, image{
+			id:   fmt.Sprintf("dgm%d", n),
+			href: href,
+			mime: "image/png",
+			data: png,
+		})
+		return []byte(fmt.Sprintf(`<img src=%q alt="diagram"/>`, href))
 	})
 	return out, images
 }
@@ -270,6 +327,7 @@ func opf(uid, title string, images []image) string {
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
 %s  </manifest>
   <spine>
     <itemref idref="content"/>
@@ -292,23 +350,20 @@ func navXHTML(title string) string {
 `, escapeXML(title), escapeXML(title), escapeXML(title))
 }
 
-// wrapChapter wraps the rendered body in an XHTML document. css is the chroma
-// stylesheet for highlighted code (empty when none); it is inlined in the head.
-// chroma's class rules contain no '<' or '&', so they are safe as XHTML #PCDATA
-// without a CDATA section.
-func wrapChapter(title, css, body string) string {
-	style := ""
-	if css != "" {
-		style = "<style>\n" + css + "</style>\n"
-	}
+// wrapChapter wraps the rendered body in an XHTML document that links the
+// packaged style.css (base styling + syntax-highlight colors). A linked,
+// manifest-declared stylesheet is the portable way to style EPUB content —
+// more widely honored by readers than an inline <style>.
+func wrapChapter(title, body string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
 <head><meta charset="utf-8"/><title>%s</title>
-%s</head>
+<link rel="stylesheet" type="text/css" href="style.css"/>
+</head>
 <body>
 %s</body>
 </html>
-`, escapeXML(title), style, body)
+`, escapeXML(title), body)
 }
 
 // escapeXML escapes text for use in XML character data / attribute values.
@@ -318,6 +373,16 @@ var escapeXML = strings.NewReplacer(
 	">", "&gt;",
 	`"`, "&quot;",
 	"'", "&apos;",
+).Replace
+
+// unescapeXML reverses the html package's escaping (htmlEscaper: & < > ") to
+// recover a mermaid block's original source for the browser to render.
+// strings.Replacer scans once, so listing &amp; alongside the others is safe.
+var unescapeXML = strings.NewReplacer(
+	"&amp;", "&",
+	"&lt;", "<",
+	"&gt;", ">",
+	"&#34;", `"`,
 ).Replace
 
 func init() {

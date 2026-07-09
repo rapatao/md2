@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -60,6 +61,7 @@ func TestRequiredEntriesPresent(t *testing.T) {
 		"META-INF/container.xml",
 		"OEBPS/content.opf",
 		"OEBPS/nav.xhtml",
+		"OEBPS/style.css",
 		"OEBPS/content.xhtml",
 	} {
 		if _, ok := files[name]; !ok {
@@ -146,10 +148,60 @@ func TestCodeBlockHighlighted(t *testing.T) {
 	if !strings.Contains(chapter, `class="chroma"`) {
 		t.Errorf("code block not syntax-highlighted: %q", chapter)
 	}
-	// The chroma stylesheet must be inlined in the chapter head, else the spans
-	// have no colors.
-	if !strings.Contains(chapter, "<style>") || !strings.Contains(chapter, ".chroma") {
-		t.Errorf("chroma stylesheet not inlined: %q", chapter)
+	// Colors come from the packaged, linked stylesheet — the portable way to
+	// style EPUB content.
+	if !strings.Contains(chapter, `href="style.css"`) {
+		t.Errorf("chapter does not link style.css: %q", chapter)
+	}
+	css := files["OEBPS/style.css"]
+	if !strings.Contains(css, ".chroma") {
+		t.Errorf("chroma highlight styles missing from style.css: %q", css)
+	}
+	// Base styling (html.BaseCSS) is bundled into the same stylesheet.
+	if !strings.Contains(css, "font-family") {
+		t.Errorf("base stylesheet missing from style.css: %q", css)
+	}
+}
+
+func TestMermaidRasterizedToImage(t *testing.T) {
+	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
+		t.Fatalf("EnableDiagrams: %v", err)
+	}
+	fakePNG := []byte("\x89PNG-fake-bytes")
+	MermaidRasterizer = func([]byte) ([]byte, error) { return fakePNG, nil }
+	t.Cleanup(func() { MermaidRasterizer = nil })
+
+	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
+
+	if files["OEBPS/images/dgm1.png"] != string(fakePNG) {
+		t.Errorf("mermaid diagram not packaged as PNG: %q", files["OEBPS/images/dgm1.png"])
+	}
+	chapter := files["OEBPS/content.xhtml"]
+	if !strings.Contains(chapter, `src="images/dgm1.png"`) {
+		t.Errorf("mermaid <pre> not replaced by <img>: %q", chapter)
+	}
+	if strings.Contains(chapter, `class="mermaid"`) {
+		t.Errorf("mermaid source left in chapter after rasterizing: %q", chapter)
+	}
+	if !strings.Contains(files["OEBPS/content.opf"], `href="images/dgm1.png" media-type="image/png"`) {
+		t.Errorf("mermaid image not declared in manifest: %q", files["OEBPS/content.opf"])
+	}
+}
+
+func TestMermaidLeftAsSourceWhenRasterizerFails(t *testing.T) {
+	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
+		t.Fatalf("EnableDiagrams: %v", err)
+	}
+	MermaidRasterizer = func([]byte) ([]byte, error) { return nil, errors.New("no browser") }
+	t.Cleanup(func() { MermaidRasterizer = nil })
+
+	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
+	chapter := files["OEBPS/content.xhtml"]
+	if !strings.Contains(chapter, `class="mermaid"`) {
+		t.Errorf("mermaid source should be kept when rasterizing fails: %q", chapter)
+	}
+	if strings.Contains(chapter, "images/dgm") {
+		t.Errorf("no diagram image should be packaged on failure: %q", chapter)
 	}
 }
 

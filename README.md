@@ -9,7 +9,7 @@ Currently supported:
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
 - **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
-- **EPUB** (`.epub`) — single-chapter EPUB3 ebook; shares the HTML renderer, so syntax-highlighted code blocks and D2/PlantUML diagrams (as static SVG) carry over; local images packaged into the archive. Mermaid needs a browser to draw, so in an ebook it shows its source
+- **EPUB** (`.epub`) — single-chapter EPUB3 ebook; shares the HTML renderer and styling, so syntax-highlighted code blocks and D2/PlantUML diagrams (as static SVG) carry over. Mermaid diagrams are pre-rendered to static images in a headless browser (needs a browser at convert time, like the PDF diagram path). Local images and diagrams are packaged into the archive
 
 ## Install
 
