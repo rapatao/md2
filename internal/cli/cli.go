@@ -40,10 +40,12 @@ func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer)
 		flatten           bool
 		keepDiagramSource bool
 		stdout            bool
+		perFile           bool
+		recursive         bool
 		showVersion       bool
 	)
 
-	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &keepDiagramSource, &stdout, &showVersion)
+	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &keepDiagramSource, &stdout, &perFile, &recursive, &showVersion)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,6 +95,18 @@ func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer)
 		return fmt.Errorf("expected at least one input file, got %d", len(inputs))
 	}
 
+	// A single directory input expands to its .md files (top-level, or the
+	// whole tree with -recursive), ordered folder by folder.
+	if len(inputs) == 1 {
+		if info, err := os.Stat(inputs[0]); err == nil && info.IsDir() {
+			files, err := markdownFiles(inputs[0], recursive)
+			if err != nil {
+				return err
+			}
+			inputs = files
+		}
+	}
+
 	// Resolve formats: explicit -f (comma list) > output extension > default pdf.
 	formats := parseList(format)
 	if len(formats) == 0 {
@@ -107,6 +121,18 @@ func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer)
 	// output name from, so an explicit destination is required.
 	if inputs[0] == "-" && output == "" && !stdout {
 		return fmt.Errorf("reading markdown from stdin (-) requires -o or -stdout")
+	}
+
+	// -per-file writes one output per input next to its source, so a single
+	// destination (-o or -stdout) is meaningless with it.
+	if perFile && (output != "" || stdout) {
+		return fmt.Errorf("-per-file cannot be combined with -o/-stdout")
+	}
+
+	// Merging multiple inputs into one document has no obvious output name, so
+	// require an explicit destination (or -per-file to split them instead).
+	if !perFile && len(inputs) > 1 && output == "" && !stdout {
+		return fmt.Errorf("merging %d inputs requires -o (or -per-file to convert each separately)", len(inputs))
 	}
 
 	// An explicit -o names a single file, so it cannot serve many formats.
@@ -129,6 +155,31 @@ func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer)
 			return err
 		}
 		convs[i] = conv
+	}
+
+	// -per-file converts each input independently to its own output next to the
+	// source, rather than merging. One failing input/format must not stop the
+	// rest, so errors are collected and joined.
+	if perFile {
+		var errs []error
+		for _, in := range inputs {
+			src, err := merge.Inputs([]string{in}, stdin)
+			if err != nil {
+				errs = append(errs, err)
+				fmt.Fprintf(os.Stderr, "md2: %v\n", err)
+				continue
+			}
+			for i, format := range formats {
+				dst := strings.TrimSuffix(in, filepath.Ext(in)) + "." + format
+				if err := writeOutput(convs[i], src, in, dst); err != nil {
+					errs = append(errs, err)
+					fmt.Fprintf(os.Stderr, "md2: %v\n", err)
+					continue
+				}
+				fmt.Printf("wrote %s\n", dst)
+			}
+		}
+		return errors.Join(errs...)
 	}
 
 	// Resolve every output path up front. The format key doubles as the file
@@ -188,6 +239,51 @@ func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer)
 		fmt.Printf("wrote %s\n", dst)
 	}
 	return errors.Join(errs...)
+}
+
+// markdownFiles lists the .md files under dir (top-level, or the whole tree
+// with recursive), ordered folder by folder, and errors if there are none.
+func markdownFiles(dir string, recursive bool) ([]string, error) {
+	files, err := collectMarkdown(dir, recursive)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no .md files in %s", dir)
+	}
+	return files, nil
+}
+
+// collectMarkdown returns dir's own .md files (sorted by name), then each
+// sub-directory's, recursively — so a folder's files stay contiguous and come
+// before its sub-folders. os.ReadDir returns entries already sorted by name.
+// It does not error on an empty sub-directory; the caller checks the total.
+func collectMarkdown(dir string, recursive bool) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files, subdirs []string
+	for _, e := range entries {
+		p := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			if recursive {
+				subdirs = append(subdirs, p)
+			}
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			files = append(files, p)
+		}
+	}
+	for _, sub := range subdirs {
+		sf, err := collectMarkdown(sub, recursive)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, sf...)
+	}
+	return files, nil
 }
 
 // parseList splits a comma-separated list, trimming blanks and dropping
