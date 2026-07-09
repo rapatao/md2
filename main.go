@@ -8,6 +8,9 @@
 // into a single document before conversion. Each file's relative image
 // references are resolved against its own directory.
 //
+// An input of "-" reads markdown from stdin (flags must precede it); this
+// requires -o or -stdout, since there is no input name to derive one from.
+//
 // If -o is omitted, the output filename is the (first) input with its
 // extension replaced by the format. If -f is omitted, the format is inferred
 // from the output extension, defaulting to pdf.
@@ -40,7 +43,7 @@ func resolveVersion() string {
 }
 
 func main() {
-	if err := cli.Run(os.Args[1:], resolveVersion(), os.Stdout); err != nil {
+	if err := cli.Run(os.Args[1:], resolveVersion(), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "md2:", err)
 		os.Exit(1)
 	}

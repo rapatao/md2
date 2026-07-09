@@ -13,7 +13,7 @@ import (
 // run invokes Run with a fixed test version and discards -stdout output; use
 // Run directly when a test cares about either.
 func run(args []string) error {
-	return Run(args, "test", io.Discard)
+	return Run(args, "test", bytes.NewReader(nil), io.Discard)
 }
 
 func TestParseList(t *testing.T) {
@@ -257,7 +257,7 @@ func TestRunFormatFromOutputExt(t *testing.T) {
 func TestRunStdout(t *testing.T) {
 	in := writeInput(t)
 	var buf bytes.Buffer
-	if err := Run([]string{"-f", "html", "-stdout", in}, "test", &buf); err != nil {
+	if err := Run([]string{"-f", "html", "-stdout", in}, "test", bytes.NewReader(nil), &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
@@ -273,7 +273,7 @@ func TestRunStdoutWithOutput(t *testing.T) {
 	in := writeInput(t)
 	out := filepath.Join(filepath.Dir(in), "custom.html")
 	var buf bytes.Buffer
-	if err := Run([]string{"-o", out, "-stdout", in}, "test", &buf); err != nil {
+	if err := Run([]string{"-o", out, "-stdout", in}, "test", bytes.NewReader(nil), &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
@@ -307,9 +307,38 @@ func TestRunErrors(t *testing.T) {
 	}
 }
 
+func TestRunStdinToStdout(t *testing.T) {
+	var buf bytes.Buffer
+	stdin := bytes.NewReader([]byte("# Piped\n"))
+	if err := Run([]string{"-f", "html", "-stdout", "-"}, "test", stdin, &buf); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("<h1")) {
+		t.Errorf("stdout missing <h1>: %q", buf.Bytes())
+	}
+}
+
+func TestRunStdinToFile(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.html")
+	stdin := bytes.NewReader([]byte("# Piped\n"))
+	if err := Run([]string{"-o", out, "-"}, "test", stdin, io.Discard); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !bytes.Contains(readFile(t, out), []byte("<h1")) {
+		t.Errorf("expected html in %s", out)
+	}
+}
+
+func TestRunStdinRequiresOutput(t *testing.T) {
+	// Reading from stdin with no -o/-stdout has no basename to name the file.
+	if err := Run([]string{"-f", "html", "-"}, "test", bytes.NewReader(nil), io.Discard); err == nil {
+		t.Error("expected error for stdin input without -o or -stdout")
+	}
+}
+
 func TestRunVersion(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Run([]string{"-version"}, "1.2.3", &buf); err != nil {
+	if err := Run([]string{"-version"}, "1.2.3", bytes.NewReader(nil), &buf); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 }
