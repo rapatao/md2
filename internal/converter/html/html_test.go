@@ -427,6 +427,66 @@ func TestInlineLocalImages(t *testing.T) {
 	}
 }
 
+// With -flatten, remote http(s) images are fetched and embedded as data URIs
+// (MIME from the response Content-Type), while non-flatten leaves them live.
+func TestInlineLocalImagesFlattenEmbedsRemote(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(tinyPNG)
+	}))
+	defer srv.Close()
+
+	doc := []byte(`<img src="` + srv.URL + `/a.png">`)
+
+	// Default (no -flatten): remote ref left untouched.
+	if out := string(inlineLocalImages(doc, ".")); !strings.Contains(out, `src="`+srv.URL+`/a.png"`) {
+		t.Errorf("remote ref should be left live without -flatten:\n%s", out)
+	}
+
+	Flatten = true
+	defer func() { Flatten = false }()
+
+	out := string(inlineLocalImages(doc, "."))
+	if !strings.Contains(out, `src="data:image/png;base64,iVBOR`) {
+		t.Errorf("remote image not embedded under -flatten:\n%s", out)
+	}
+	if strings.Contains(out, srv.URL) {
+		t.Errorf("remote URL should be replaced under -flatten:\n%s", out)
+	}
+	if gotUA != RemoteUserAgent {
+		t.Errorf("User-Agent = %q, want %q", gotUA, RemoteUserAgent)
+	}
+
+	// -user-agent override is honored.
+	old := RemoteUserAgent
+	RemoteUserAgent = "custom-agent/1.0"
+	defer func() { RemoteUserAgent = old }()
+	inlineLocalImages(doc, ".")
+	if gotUA != "custom-agent/1.0" {
+		t.Errorf("override User-Agent = %q, want %q", gotUA, "custom-agent/1.0")
+	}
+}
+
+// A remote image that fails to fetch under -flatten leaves the original src in
+// place rather than failing the render.
+func TestInlineLocalImagesFlattenRemoteFailureKeepsSrc(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	Flatten = true
+	defer func() { Flatten = false }()
+
+	doc := []byte(`<img src="` + srv.URL + `/missing.png">`)
+	out := string(inlineLocalImages(doc, "."))
+	if !strings.Contains(out, `src="`+srv.URL+`/missing.png"`) {
+		t.Errorf("failed remote fetch should leave src in place:\n%s", out)
+	}
+}
+
 // RenderFrom embeds a local image referenced from the markdown.
 func TestRenderFromEmbedsImage(t *testing.T) {
 	dir := t.TempDir()

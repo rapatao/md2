@@ -7,7 +7,7 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 Currently supported:
 
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
-- **HTML** (`.html`) — self-contained; local images embedded as data URIs; syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
 
 ## Install
@@ -128,7 +128,8 @@ Flags:
 - `-o` output file. Default: the input's name with the format extension. Cannot be combined with multiple formats. **Required when merging multiple inputs** (several files, or a directory) into one document.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
-- `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, **and** fetch remote `http(s)` images and embed them as data URIs, for a fully self-contained file with no JS runtime or external assets needed to view it (e.g. importing into Google Docs). Requires a browser for diagrams, and — new in this flag — **network access at convert time for any document that references remote images** (so a doc with remote images no longer converts in an airgapped/offline environment under `-flatten`). A remote image that can't be fetched is left as a live reference with a warning, not a hard failure.
+- `-user-agent` `User-Agent` header sent when `-flatten` fetches remote images to embed. Default: a browser-like string, since some hosts reject the default Go client UA. Override for hosts with specific requirements.
 - `-keep-diagram-source` keep the original diagram source in the output in addition to the rendered diagram: the rendered diagram is emitted first, immediately followed by the source as a code block. Default: off — a diagram replaces its source.
 - `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
@@ -209,7 +210,10 @@ Three renderers are supported, with different rendering models:
   renders the document in a headless browser and replaces each diagram with a
   static PNG image, producing a self-contained file that displays anywhere —
   including a Google Docs import (upload the `.html` to Drive, then
-  "Open with > Google Docs"), which runs no JavaScript. In **PDF**, a mermaid
+  "Open with > Google Docs"), which runs no JavaScript. `-flatten` also fetches
+  any remote `http(s)` images and embeds them as data URIs (needing network
+  access at convert time), so the output has no external asset dependencies at
+  all. In **PDF**, a mermaid
   block forces the headless-browser engine (the pure-Go renderer cannot run
   JavaScript), so the diagram is captured as vector graphics. Inlining the
   library adds ~3 MB to each HTML file that contains a mermaid diagram;

@@ -4,7 +4,9 @@
 //
 // Local images referenced by the document are embedded as data URIs so the
 // output is self-contained — it needs no accompanying asset files and survives
-// being moved or imported elsewhere.
+// being moved or imported elsewhere. Remote (http/https) images stay live
+// references by default; with -flatten they are fetched and embedded too, for a
+// fully self-contained document (at the cost of needing network access).
 //
 // Fenced code blocks tagged `mermaid` are emitted as <pre class="mermaid">
 // elements and, when present, the document inlines the mermaid library so the
@@ -18,11 +20,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/chroma/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -243,14 +247,26 @@ var imgSrcRe = regexp.MustCompile(`(<img\b[^>]*?\bsrc=")([^"]*)(")`)
 
 // inlineLocalImages rewrites <img src="..."> references that point at local
 // files into self-contained data URIs, resolving relative paths against baseDir.
-// Already-inlined (data:) and remote (scheme://) sources are left untouched, as
-// is any path that cannot be read — a broken local reference is reported but
-// does not fail the render.
+// Already-inlined (data:) sources are left untouched, as is any path that cannot
+// be read — a broken local reference is reported but does not fail the render.
+// Remote (scheme://) sources are normally left as live references; with -flatten
+// (Flatten), http(s) images are fetched and embedded too, for a fully
+// self-contained document (a fetch failure leaves the original src in place).
 func inlineLocalImages(doc []byte, baseDir string) []byte {
 	return imgSrcRe.ReplaceAllFunc(doc, func(m []byte) []byte {
 		g := imgSrcRe.FindSubmatch(m)
 		src := string(g[2])
-		if src == "" || strings.HasPrefix(src, "data:") || urlref.HasScheme(src) {
+		if src == "" || strings.HasPrefix(src, "data:") {
+			return m
+		}
+		if urlref.HasScheme(src) {
+			// Remote images stay live references unless -flatten wants a fully
+			// self-contained document, in which case fetch + embed.
+			if Flatten && (strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://")) {
+				if uri, ok := fetchRemoteImage(src); ok {
+					return append(append(append([]byte(nil), g[1]...), uri...), g[3]...)
+				}
+			}
 			return m
 		}
 
@@ -266,6 +282,53 @@ func inlineLocalImages(doc []byte, baseDir string) []byte {
 		uri := "data:" + imageMIME(path) + ";base64," + base64.StdEncoding.EncodeToString(data)
 		return append(append(append([]byte(nil), g[1]...), uri...), g[3]...)
 	})
+}
+
+// RemoteUserAgent is the User-Agent sent when -flatten fetches remote images to
+// embed. Browser-like by default because some hosts (CDNs, Wikipedia, etc.) 403
+// the default Go client UA; overridable via the -user-agent CLI flag.
+var RemoteUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+	"(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+// remoteImageClient fetches remote images for -flatten. The timeout bounds a
+// hung host so a single bad reference can't hang the whole conversion.
+var remoteImageClient = &http.Client{Timeout: 30 * time.Second}
+
+// fetchRemoteImage downloads an http(s) image and returns it as a data URI. On
+// any failure it warns to stderr and returns ok=false so the caller leaves the
+// original src in place — a broken reference must not fail the conversion. The
+// MIME type comes from the response Content-Type, falling back to the URL's
+// extension (remote URLs often lack a useful one).
+// ponytail: no response-size cap; the client timeout bounds a hung host. Add a
+// MaxBytesReader if a pathologically huge image ever shows up.
+func fetchRemoteImage(url string) (string, bool) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "md2: cannot embed remote image %q: %v\n", url, err)
+		return "", false
+	}
+	req.Header.Set("User-Agent", RemoteUserAgent)
+
+	resp, err := remoteImageClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "md2: cannot embed remote image %q: %v\n", url, err)
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "md2: cannot embed remote image %q: HTTP %s\n", url, resp.Status)
+		return "", false
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "md2: cannot embed remote image %q: %v\n", url, err)
+		return "", false
+	}
+	mime := resp.Header.Get("Content-Type")
+	if mime == "" {
+		mime = imageMIME(url)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), true
 }
 
 // imageMIME guesses an image MIME type from a file extension, defaulting to PNG.
