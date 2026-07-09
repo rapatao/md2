@@ -9,6 +9,7 @@ Currently supported:
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
 - **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
+- **EPUB** (`.epub`) — single-chapter EPUB3 ebook; local images packaged into the archive
 
 ## Install
 
@@ -104,6 +105,7 @@ sha256sum --ignore-missing -c checksums.txt
 md2 input.md                  # writes input.pdf (default format)
 md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
+md2 -f epub input.md          # writes input.epub (EPUB3 ebook)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
 md2 -f html -render plantuml input.md          # render plantuml diagrams via a PlantUML server
