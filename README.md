@@ -111,6 +111,9 @@ md2 -f html -css extra.css input.md  # append custom CSS after the built-in styl
 md2 -o report.pdf input.md    # explicit output (format from extension)
 md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md  # merge files, in order, into one document
+md2 -f pdf -o manual.pdf docs/  # merge every docs/*.md, sorted, into one document
+md2 -f html -per-file docs/     # convert each docs/*.md to its own .html
+md2 -f pdf -o book.pdf -recursive docs/  # merge docs/ and its sub-folders
 curl -s https://example.com/readme.md | md2 -f html -o out.html -  # read markdown from stdin
 ```
 
@@ -122,13 +125,15 @@ the working directory.
 
 Flags:
 
-- `-o` output file. Default: (first) input name with the format extension. Cannot be combined with multiple formats.
+- `-o` output file. Default: the input's name with the format extension. Cannot be combined with multiple formats. **Required when merging multiple inputs** (several files, or a directory) into one document.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
 - `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
 - `-keep-diagram-source` keep the original diagram source in the output in addition to the rendered diagram: the rendered diagram is emitted first, immediately followed by the source as a code block. Default: off — a diagram replaces its source.
 - `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
+- `-per-file` with multiple inputs (several files, or a directory) convert each to its own output next to its source instead of merging into one document. Cannot be combined with `-o`/`-stdout` (which name a single destination).
+- `-recursive` when the input is a directory, also pick up `.md` files in sub-directories, ordered folder by folder (a folder's own files first, then its sub-folders). Default: top-level `*.md` only.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.
@@ -245,7 +250,8 @@ extension for the format — `docs/report.md` with `-f pdf,html` produces
 ### Multiple inputs
 
 Pass more than one markdown file to merge them, in the order given, into a
-single output document:
+single output document. Merging has no obvious output name, so `-o` (or
+`-stdout`) is **required**:
 
 ```sh
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md
@@ -256,8 +262,32 @@ the first non-flag argument, so `-o`/`-f` cannot follow the file list. Files
 are concatenated with a blank line between them (so the last line of one file
 never merges into the first line of the next); heading levels are used as-is,
 with no automatic page or section break inserted. Each file's relative image
-references resolve against its own directory. When `-o` is omitted, the
-merged output takes the *first* input's base name.
+references resolve against its own directory.
+
+Pass `-per-file` instead to convert each input to its own output next to its
+source, rather than merging:
+
+```sh
+md2 -f html -per-file intro.md chapter1.md   # writes intro.html and chapter1.html
+```
+
+### Directory input
+
+Give a directory as the input to pick up the `.md` files inside it. The same
+merge-vs-split rules apply: `-o` merges every file into one document,
+`-per-file` converts each to its own output:
+
+```sh
+md2 -f pdf -o manual.pdf docs/   # merge all docs/*.md, sorted, into one PDF
+md2 -f html -per-file docs/      # one .html per .md, next to each source
+```
+
+Files are picked up top-level only by default; add `-recursive` to descend into
+sub-directories. They are ordered **folder by folder** — a folder's own files
+first (sorted by name), then each sub-folder in turn, recursively — so naming
+files `01-intro.md`, `02-setup.md` gives a predictable merge order. A directory
+with no `.md` files is an error. The input must be *either* a single directory
+*or* a list of files, not a mix.
 
 ## Supported formats
 

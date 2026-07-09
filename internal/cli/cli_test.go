@@ -128,12 +128,12 @@ func TestRunMergeMultipleInputs(t *testing.T) {
 	if err := os.WriteFile(b, []byte("# Second\n\nsecond body\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run([]string{"-f", "html", a, b}); err != nil {
+	out := filepath.Join(dir, "merged.html")
+	if err := run([]string{"-f", "html", "-o", out, a, b}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	// -o is omitted, so the merged output takes the first input's basename.
-	data := readFile(t, replaceExt(a, ".html"))
+	data := readFile(t, out)
 	if !bytes.Contains(data, []byte("First")) || !bytes.Contains(data, []byte("Second")) {
 		t.Errorf("merged output missing content from both inputs: %q", data)
 	}
@@ -177,16 +177,120 @@ func TestRunMergeResolvesImagesPerFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := run([]string{"-f", "html", a, b}); err != nil {
+	out := filepath.Join(dir, "merged.html")
+	if err := run([]string{"-f", "html", "-o", out, a, b}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	data := readFile(t, replaceExt(a, ".html"))
+	data := readFile(t, out)
 	if n := bytes.Count(data, []byte("data:image/png;base64,")); n != 2 {
 		t.Errorf("expected both images embedded (2 data URIs), got %d: %q", n, data)
 	}
 	if bytes.Contains(data, []byte(`src="fig.png"`)) {
 		t.Errorf("an image was not resolved and embedded: %q", data)
+	}
+}
+
+// writeMD writes markdown to path, creating parent dirs.
+func writeMD(t *testing.T, path, md string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A directory input merges its .md files, in name order, into one document.
+func TestRunDirectoryMerge(t *testing.T) {
+	dir := t.TempDir()
+	writeMD(t, filepath.Join(dir, "01.md"), "# First\n")
+	writeMD(t, filepath.Join(dir, "02.md"), "# Second\n")
+
+	out := filepath.Join(dir, "all.html")
+	if err := run([]string{"-f", "html", "-o", out, dir}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, out)
+	firstIdx := bytes.Index(data, []byte("First"))
+	secondIdx := bytes.Index(data, []byte("Second"))
+	if firstIdx == -1 || secondIdx == -1 || firstIdx > secondIdx {
+		t.Errorf("directory not merged in name order: %q", data)
+	}
+}
+
+// A directory with -per-file converts each .md to its own output.
+func TestRunDirectoryPerFile(t *testing.T) {
+	dir := t.TempDir()
+	writeMD(t, filepath.Join(dir, "01.md"), "# First\n")
+	writeMD(t, filepath.Join(dir, "02.md"), "# Second\n")
+
+	if err := run([]string{"-f", "html", "-per-file", dir}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	one := readFile(t, filepath.Join(dir, "01.html"))
+	two := readFile(t, filepath.Join(dir, "02.html"))
+	if !bytes.Contains(one, []byte("First")) || bytes.Contains(one, []byte("Second")) {
+		t.Errorf("01.html should hold only its own content: %q", one)
+	}
+	if !bytes.Contains(two, []byte("Second")) || bytes.Contains(two, []byte("First")) {
+		t.Errorf("02.html should hold only its own content: %q", two)
+	}
+}
+
+// -per-file applies to explicit multiple files too, one output each.
+func TestRunPerFileMultipleInputs(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+	writeMD(t, a, "# A\n")
+	writeMD(t, b, "# B\n")
+
+	if err := run([]string{"-per-file", "-f", "html", a, b}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, p := range []string{replaceExt(a, ".html"), replaceExt(b, ".html")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected per-file output %s: %v", p, err)
+		}
+	}
+}
+
+// -recursive picks up sub-directory files, ordered folder by folder: a folder's
+// own files before its sub-folders.
+func TestRunDirectoryRecursiveOrder(t *testing.T) {
+	dir := t.TempDir()
+	writeMD(t, filepath.Join(dir, "02.md"), "# Two\n")
+	writeMD(t, filepath.Join(dir, "01.md"), "# One\n")
+	writeMD(t, filepath.Join(dir, "sub", "03.md"), "# Three\n")
+
+	out := filepath.Join(dir, "rec.html")
+	if err := run([]string{"-f", "html", "-recursive", "-o", out, dir}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, out)
+	i1 := bytes.Index(data, []byte("One"))
+	i2 := bytes.Index(data, []byte("Two"))
+	i3 := bytes.Index(data, []byte("Three"))
+	if i1 == -1 || i2 == -1 || i3 == -1 || !(i1 < i2 && i2 < i3) {
+		t.Errorf("recursive order want One<Two<Three (folder by folder): %q", data)
+	}
+}
+
+// Without -recursive, sub-directory files are ignored.
+func TestRunDirectoryNonRecursiveSkipsSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	writeMD(t, filepath.Join(dir, "01.md"), "# Top\n")
+	writeMD(t, filepath.Join(dir, "sub", "02.md"), "# Nested\n")
+
+	out := filepath.Join(dir, "all.html")
+	if err := run([]string{"-f", "html", "-o", out, dir}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := readFile(t, out)
+	if bytes.Contains(data, []byte("Nested")) {
+		t.Errorf("sub-directory file should be skipped without -recursive: %q", data)
 	}
 }
 
@@ -297,6 +401,10 @@ func TestRunErrors(t *testing.T) {
 		{"unsupported format", []string{"-f", "docx", in}},
 		{"no input", []string{}},
 		{"missing input file", []string{filepath.Join(t.TempDir(), "nope.md")}},
+		{"merge multiple inputs without -o", []string{"-f", "html", in, writeInput(t)}},
+		{"per-file with -o", []string{"-per-file", "-o", "x.html", in}},
+		{"per-file with -stdout", []string{"-per-file", "-stdout", in}},
+		{"empty directory", []string{t.TempDir()}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
