@@ -50,17 +50,53 @@ func (Converter) ConvertFrom(src []byte, srcPath string, w io.Writer) error {
 }
 
 func convertFrom(src []byte, baseDir string, w io.Writer) error {
-	bin, err := browserPath()
-	if err != nil {
-		return err
-	}
-
 	doc, err := htmlconv.RenderFrom(src, baseDir)
 	if err != nil {
 		return err
 	}
 
-	url, err := launcher.New().Bin(bin).Headless(true).Launch()
+	return withPage(func(page *rod.Page) error {
+		if err := page.SetDocumentContent(string(doc)); err != nil {
+			return fmt.Errorf("set page content: %w", err)
+		}
+		if err := page.WaitLoad(); err != nil {
+			return fmt.Errorf("wait for page load: %w", err)
+		}
+
+		// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
+		// before printing so the PDF captures the diagrams, not empty
+		// placeholders. d2 diagrams route through the browser too but are already
+		// inline SVG at load, so only mermaid needs the wait.
+		if htmlconv.RequiresMermaidWait(src) {
+			waitMermaid(page)
+		}
+
+		stream, err := page.PDF(&proto.PagePrintToPDF{PrintBackground: true})
+		if err != nil {
+			return fmt.Errorf("print to PDF: %w", err)
+		}
+		defer stream.Close()
+
+		if _, err := io.Copy(w, stream); err != nil {
+			return fmt.Errorf("write PDF: %w", err)
+		}
+		return nil
+	})
+}
+
+// withPage launches a headless browser, opens a blank page, and runs fn against
+// it. The launcher and browser are always cleaned up — including when setup
+// fails partway — so no Chromium process is left behind.
+func withPage(fn func(*rod.Page) error) error {
+	bin, err := browserPath()
+	if err != nil {
+		return err
+	}
+
+	l := launcher.New().Bin(bin).Headless(true)
+	defer l.Cleanup()
+
+	url, err := l.Launch()
 	if err != nil {
 		return fmt.Errorf("launch browser: %w", err)
 	}
@@ -75,31 +111,7 @@ func convertFrom(src []byte, baseDir string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("open page: %w", err)
 	}
-	if err := page.SetDocumentContent(string(doc)); err != nil {
-		return fmt.Errorf("set page content: %w", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		return fmt.Errorf("wait for page load: %w", err)
-	}
-
-	// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
-	// before printing so the PDF captures the diagrams, not empty placeholders.
-	// d2 diagrams route through the browser too but are already inline SVG at
-	// load, so only mermaid needs the wait.
-	if htmlconv.RequiresMermaidWait(src) {
-		waitMermaid(page)
-	}
-
-	stream, err := page.PDF(&proto.PagePrintToPDF{PrintBackground: true})
-	if err != nil {
-		return fmt.Errorf("print to PDF: %w", err)
-	}
-	defer stream.Close()
-
-	if _, err := io.Copy(w, stream); err != nil {
-		return fmt.Errorf("write PDF: %w", err)
-	}
-	return nil
+	return fn(page)
 }
 
 // waitMermaid polls until the page's mermaid init script signals completion
@@ -121,87 +133,70 @@ func waitMermaid(page *rod.Page) {
 // <pre class="mermaid"> with an <img> holding a PNG snapshot, strips the now-
 // useless scripts, and returns the resulting static, self-contained HTML. It is
 // installed as html.Rasterizer to back the -flatten path.
-func Rasterize(doc []byte) ([]byte, error) {
-	bin, err := browserPath()
-	if err != nil {
-		return nil, err
-	}
+func Rasterize(doc []byte) (out []byte, err error) {
+	err = withPage(func(page *rod.Page) error {
+		if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+			Width: 1280, Height: 1024,
+		}); err != nil {
+			return fmt.Errorf("set viewport: %w", err)
+		}
+		if err := page.SetDocumentContent(string(doc)); err != nil {
+			return fmt.Errorf("set page content: %w", err)
+		}
+		if err := page.WaitLoad(); err != nil {
+			return fmt.Errorf("wait for page load: %w", err)
+		}
 
-	url, err := launcher.New().Bin(bin).Headless(true).Launch()
-	if err != nil {
-		return nil, fmt.Errorf("launch browser: %w", err)
-	}
-
-	browser := rod.New().ControlURL(url)
-	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("connect to browser: %w", err)
-	}
-	defer browser.Close()
-
-	page, err := browser.Page(proto.TargetCreateTarget{})
-	if err != nil {
-		return nil, fmt.Errorf("open page: %w", err)
-	}
-
-	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-		Width: 1280, Height: 1024,
-	}); err != nil {
-		return nil, fmt.Errorf("set viewport: %w", err)
-	}
-	if err := page.SetDocumentContent(string(doc)); err != nil {
-		return nil, fmt.Errorf("set page content: %w", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		return nil, fmt.Errorf("wait for page load: %w", err)
-	}
-
-	els, err := page.Elements("pre.mermaid")
-	if err != nil {
-		return nil, fmt.Errorf("find diagrams: %w", err)
-	}
-
-	// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
-	// before snapshotting so we capture the diagrams, not empty placeholders.
-	// A document without mermaid blocks (e.g. only d2, already inline SVG) has
-	// nothing to wait for, so skip the wait rather than eat its timeout.
-	if len(els) > 0 {
-		waitMermaid(page)
-	}
-
-	// Force a white page background so diagram snapshots carry an opaque white
-	// backdrop rather than transparency, keeping them legible wherever they land.
-	if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
-		return nil, fmt.Errorf("set background: %w", err)
-	}
-	for _, el := range els {
-		png, err := snapshotDiagram(page, el)
+		els, err := page.Elements("pre.mermaid")
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("find diagrams: %w", err)
 		}
-		uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
-		// Replace the rendered <pre class="mermaid"> with a plain <img>. rod
-		// binds `this` to the element, so the arrow function can act on it.
-		if _, err := el.Eval(`(src) => {
-			const img = document.createElement('img');
-			img.src = src;
-			this.replaceWith(img);
-		}`, uri); err != nil {
-			return nil, fmt.Errorf("inline diagram: %w", err)
+
+		// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
+		// before snapshotting so we capture the diagrams, not empty placeholders.
+		// A document without mermaid blocks (e.g. only d2, already inline SVG) has
+		// nothing to wait for, so skip the wait rather than eat its timeout.
+		if len(els) > 0 {
+			waitMermaid(page)
 		}
-	}
 
-	// The mermaid library and init script are dead weight in a static document.
-	if _, err := page.Eval(`() => {
-		document.querySelectorAll('script').forEach((s) => s.remove());
-	}`); err != nil {
-		return nil, fmt.Errorf("strip scripts: %w", err)
-	}
+		// Force a white page background so diagram snapshots carry an opaque white
+		// backdrop rather than transparency, keeping them legible wherever they land.
+		if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
+			return fmt.Errorf("set background: %w", err)
+		}
+		for _, el := range els {
+			png, err := snapshotDiagram(page, el)
+			if err != nil {
+				return err
+			}
+			uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+			// Replace the rendered <pre class="mermaid"> with a plain <img>. rod
+			// binds `this` to the element, so the arrow function can act on it.
+			if _, err := el.Eval(`(src) => {
+				const img = document.createElement('img');
+				img.src = src;
+				this.replaceWith(img);
+			}`, uri); err != nil {
+				return fmt.Errorf("inline diagram: %w", err)
+			}
+		}
 
-	out, err := page.HTML()
-	if err != nil {
-		return nil, fmt.Errorf("read rendered html: %w", err)
-	}
-	return []byte(out), nil
+		// The mermaid library and init script are dead weight in a static document.
+		if _, err := page.Eval(`() => {
+			document.querySelectorAll('script').forEach((s) => s.remove());
+		}`); err != nil {
+			return fmt.Errorf("strip scripts: %w", err)
+		}
+
+		html, err := page.HTML()
+		if err != nil {
+			return fmt.Errorf("read rendered html: %w", err)
+		}
+		out = []byte(html)
+		return nil
+	})
+	return out, err
 }
 
 // diagramScale renders diagram snapshots at this device-pixel ratio so the PNGs
