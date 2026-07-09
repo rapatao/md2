@@ -97,7 +97,9 @@ func renderList(list *ast.List, src []byte) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderTable renders header and body rows with cells joined by " | ".
+// renderTable renders header and body rows with cells joined by " | ", and a
+// dashed separator line after the header row so it reads as a header in plain
+// text rather than blending into the body.
 func renderTable(n ast.Node, src []byte) string {
 	var rows []string
 	for row := n.FirstChild(); row != nil; row = row.NextSibling() {
@@ -105,7 +107,13 @@ func renderTable(n ast.Node, src []byte) string {
 		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
 			cells = append(cells, strings.TrimSpace(inlineText(cell, src)))
 		}
-		rows = append(rows, strings.Join(cells, " | "))
+		line := strings.Join(cells, " | ")
+		rows = append(rows, line)
+		// goldmark emits the header as the first row (*east.TableHeader); follow
+		// it with a separator sized to the header line's width.
+		if _, ok := row.(*east.TableHeader); ok {
+			rows = append(rows, strings.Repeat("-", len(line)))
+		}
 	}
 	return strings.Join(rows, "\n")
 }
