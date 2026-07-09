@@ -3,8 +3,11 @@
 //
 // The output is an OCF zip container: a stored "mimetype" entry, an OPF package
 // document, an EPUB3 navigation document, and one XHTML chapter holding the
-// whole document. The chapter is rendered as well-formed XHTML (goldmark's
-// XHTML mode) so it passes EPUB validators.
+// whole document. The chapter is rendered by the html package's XHTMLBody — the
+// same pipeline as HTML output — so it shares syntax highlighting and diagram
+// rendering (d2/plantuml as static SVG; mermaid stays its source, as an ebook
+// reader has no JS runtime to draw it). XHTMLBody emits well-formed XHTML so the
+// chapter passes EPUB validators.
 //
 // Local images referenced by relative paths are packaged as real zip entries
 // under OEBPS/images/ and declared in the OPF manifest. Remote (http(s)://) and
@@ -25,11 +28,11 @@ import (
 	"time"
 
 	"github.com/rapatao/md2/internal/converter"
+	"github.com/rapatao/md2/internal/converter/html"
 	"github.com/rapatao/md2/internal/urlref"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
-	ghtml "github.com/yuin/goldmark/renderer/html"
 	gtext "github.com/yuin/goldmark/text"
 )
 
@@ -55,27 +58,21 @@ func convert(src []byte, baseDir string, w io.Writer) error {
 	return err
 }
 
-// mdToXHTML renders markdown into an XHTML body fragment. WithXHTML makes void
-// elements (<img/>, <br/>, <hr/>) self-closing so the output is well-formed XML;
-// without it EPUB validators reject the chapter. No WithUnsafe: raw HTML stays
-// escaped, matching the html package.
-var mdToXHTML = goldmark.New(
-	goldmark.WithExtensions(extension.GFM),
-	goldmark.WithRendererOptions(ghtml.WithXHTML()),
-)
+// titleParser parses markdown solely to extract the document title (first
+// heading). The body itself is rendered by html.XHTMLBody.
+var titleParser = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 // Render converts markdown into the bytes of a complete EPUB3 file. Relative
 // image references are resolved against baseDir and packaged into the archive.
 func Render(src []byte, baseDir string) ([]byte, error) {
-	pdoc := mdToXHTML.Parser().Parse(gtext.NewReader(src))
-	var body bytes.Buffer
-	if err := mdToXHTML.Renderer().Render(&body, src, pdoc); err != nil {
+	body, css, err := html.XHTMLBody(src)
+	if err != nil {
 		return nil, err
 	}
 
-	title := firstHeading(pdoc, src)
-	xhtml, images := packageImages(body.Bytes(), baseDir)
-	chapter := wrapChapter(title, string(xhtml))
+	title := firstHeading(src)
+	xhtml, images := packageImages(body, baseDir)
+	chapter := wrapChapter(title, css, string(xhtml))
 
 	uid, err := newUUID()
 	if err != nil {
@@ -198,7 +195,8 @@ func imageMIME(path string) string {
 
 // firstHeading returns the plain text of the document's first heading, or
 // "Untitled" if there is none.
-func firstHeading(doc ast.Node, src []byte) string {
+func firstHeading(src []byte) string {
+	doc := titleParser.Parser().Parse(gtext.NewReader(src))
 	title := "Untitled"
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if entering {
@@ -294,14 +292,23 @@ func navXHTML(title string) string {
 `, escapeXML(title), escapeXML(title), escapeXML(title))
 }
 
-func wrapChapter(title, body string) string {
+// wrapChapter wraps the rendered body in an XHTML document. css is the chroma
+// stylesheet for highlighted code (empty when none); it is inlined in the head.
+// chroma's class rules contain no '<' or '&', so they are safe as XHTML #PCDATA
+// without a CDATA section.
+func wrapChapter(title, css, body string) string {
+	style := ""
+	if css != "" {
+		style = "<style>\n" + css + "</style>\n"
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en">
-<head><meta charset="utf-8"/><title>%s</title></head>
+<head><meta charset="utf-8"/><title>%s</title>
+%s</head>
 <body>
 %s</body>
 </html>
-`, escapeXML(title), body)
+`, escapeXML(title), style, body)
 }
 
 // escapeXML escapes text for use in XML character data / attribute values.

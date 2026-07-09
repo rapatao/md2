@@ -39,6 +39,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
+	ghtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
@@ -192,36 +193,22 @@ func Render(src []byte) ([]byte, error) {
 // diagrams, the mermaid library and an init script are inlined so the diagrams
 // render without any network access.
 func RenderFrom(src []byte, baseDir string) ([]byte, error) {
-	dr := &diagramRenderer{}
-	md := goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
-		// Generate GitHub-style id attributes on headings so in-document links
-		// like [x](#my-section) resolve to the heading.
-		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
-		),
-	)
-
-	doc := md.Parser().Parse(text.NewReader(src))
-	hasMermaid := containsEnabledDiagram(doc, src, "mermaid")
-
-	var body bytes.Buffer
-	if err := md.Renderer().Render(&body, src, doc); err != nil {
+	body, css, hasMermaid, err := renderBody(src, false)
+	if err != nil {
 		return nil, err
 	}
 
 	// Embed local images into the body before the mermaid library is appended,
 	// so the scan never touches that script (which contains <img>-like strings).
-	bodyBytes := inlineLocalImages(body.Bytes(), baseDir)
+	bodyBytes := inlineLocalImages(body, baseDir)
 
 	var out bytes.Buffer
 	out.WriteString(docHeadOpen)
 	// Inject the chroma stylesheet only when a block was actually highlighted,
 	// before any ExtraCSS so -css can override highlight colors via the cascade.
-	if dr.highlighted {
+	if css != "" {
 		out.WriteString("<style>\n")
-		_ = highlightFormatter.WriteCSS(&out, highlightStyle)
+		out.WriteString(css)
 		out.WriteString("</style>\n")
 	}
 	if ExtraCSS != "" {
@@ -240,6 +227,60 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	}
 	out.WriteString(docTail)
 	return out.Bytes(), nil
+}
+
+// renderBody parses src and renders just the document body (no <html>/<head>
+// wrapper). It returns the body markup, the chroma stylesheet for any
+// syntax-highlighted code (empty when nothing was highlighted), and whether the
+// body contains an enabled mermaid diagram. xhtml selects well-formed XHTML
+// output — void elements like <img> and <hr> are self-closed — which the EPUB
+// converter needs; the HTML path leaves it off. Images are left as their
+// original references; callers embed them (inline data URIs for HTML, packaged
+// archive entries for EPUB).
+func renderBody(src []byte, xhtml bool) ([]byte, string, bool, error) {
+	dr := &diagramRenderer{}
+	rendererOpts := []renderer.Option{
+		renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
+	}
+	if xhtml {
+		rendererOpts = append(rendererOpts, ghtml.WithXHTML())
+	}
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		// Generate GitHub-style id attributes on headings so in-document links
+		// like [x](#my-section) resolve to the heading.
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+		goldmark.WithRendererOptions(rendererOpts...),
+	)
+
+	doc := md.Parser().Parse(text.NewReader(src))
+	hasMermaid := containsEnabledDiagram(doc, src, "mermaid")
+
+	var body bytes.Buffer
+	if err := md.Renderer().Render(&body, src, doc); err != nil {
+		return nil, "", false, err
+	}
+
+	var css string
+	if dr.highlighted {
+		var s bytes.Buffer
+		_ = highlightFormatter.WriteCSS(&s, highlightStyle)
+		css = s.String()
+	}
+	return body.Bytes(), css, hasMermaid, nil
+}
+
+// XHTMLBody renders markdown to a well-formed XHTML body fragment plus the
+// chroma stylesheet for any highlighted code, for the EPUB converter. Unlike
+// RenderFrom it does not wrap the result in a full document and does not inline
+// images — the caller packages them into the archive. d2 and plantuml diagrams
+// are inlined as static SVG (they render at conversion time), so they display in
+// an ebook; a mermaid diagram stays a <pre class="mermaid"> block — it renders
+// client-side only, so without a browser (as in a typical reader) it shows its
+// source rather than a picture.
+func XHTMLBody(src []byte) ([]byte, string, error) {
+	body, css, _, err := renderBody(src, true)
+	return body, css, err
 }
 
 // imgSrcRe matches the src attribute of an <img> tag, capturing the URL.

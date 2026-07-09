@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rapatao/md2/internal/converter/html"
 )
 
 // readEPUB renders md and returns the archive reader plus a name->contents map.
@@ -135,6 +137,41 @@ func TestMissingImageDoesNotFail(t *testing.T) {
 	}
 	if strings.Contains(files["OEBPS/content.opf"], "images/") {
 		t.Errorf("no image should be packaged: %q", files["OEBPS/content.opf"])
+	}
+}
+
+func TestCodeBlockHighlighted(t *testing.T) {
+	_, files := readEPUB(t, "```go\nfmt.Println(\"hi\")\n```\n", ".")
+	chapter := files["OEBPS/content.xhtml"]
+	if !strings.Contains(chapter, `class="chroma"`) {
+		t.Errorf("code block not syntax-highlighted: %q", chapter)
+	}
+	// The chroma stylesheet must be inlined in the chapter head, else the spans
+	// have no colors.
+	if !strings.Contains(chapter, "<style>") || !strings.Contains(chapter, ".chroma") {
+		t.Errorf("chroma stylesheet not inlined: %q", chapter)
+	}
+}
+
+func TestDiagramRenderedAsSVG(t *testing.T) {
+	if err := html.EnableDiagrams([]string{"d2"}); err != nil {
+		t.Fatalf("EnableDiagrams: %v", err)
+	}
+	_, files := readEPUB(t, "# D\n\n```d2\na -> b\n```\n", ".")
+	chapter := files["OEBPS/content.xhtml"]
+	if !strings.Contains(chapter, "<svg") {
+		t.Errorf("d2 diagram not rendered as inline SVG: %q", chapter)
+	}
+	// Inline SVG must not break XHTML well-formedness.
+	dec := xml.NewDecoder(strings.NewReader(chapter))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("chapter with inline SVG is not well-formed XML: %v", err)
+		}
 	}
 }
 
