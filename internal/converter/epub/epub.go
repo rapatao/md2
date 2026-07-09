@@ -196,20 +196,41 @@ func imageMIME(path string) string {
 	}
 }
 
-// firstHeading returns the text of the document's first heading, or "Untitled"
-// if there is none.
+// firstHeading returns the plain text of the document's first heading, or
+// "Untitled" if there is none.
 func firstHeading(doc ast.Node, src []byte) string {
 	title := "Untitled"
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if entering {
 			if h, ok := n.(*ast.Heading); ok {
-				title = string(h.Text(src))
+				title = headingText(h, src)
 				return ast.WalkStop, nil
 			}
 		}
 		return ast.WalkContinue, nil
 	})
 	return title
+}
+
+// headingText collects a heading's visible text, descending through inline
+// markup (emphasis, code spans, ...) and gathering the text leaves. This
+// replaces the deprecated ast.Node.Text, mirroring how text.go pulls text off
+// the source segments.
+func headingText(h ast.Node, src []byte) string {
+	var b strings.Builder
+	_ = ast.Walk(h, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch t := n.(type) {
+		case *ast.Text:
+			b.Write(t.Segment.Value(src))
+		case *ast.String:
+			b.Write(t.Value)
+		}
+		return ast.WalkContinue, nil
+	})
+	return b.String()
 }
 
 // newUUID returns a random RFC 4122 v4 "urn:uuid:" identifier for dc:identifier.

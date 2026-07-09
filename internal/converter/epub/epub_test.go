@@ -93,6 +93,14 @@ func TestTitleFromHeading(t *testing.T) {
 	}
 }
 
+func TestTitleFromHeadingWithInlineMarkup(t *testing.T) {
+	// The walker must descend through emphasis/code and collect the text leaves.
+	_, files := readEPUB(t, "# My **Bold** `Book`\n\nbody\n", ".")
+	if !strings.Contains(files["OEBPS/content.opf"], "<dc:title>My Bold Book</dc:title>") {
+		t.Errorf("inline markup not flattened in title: %q", files["OEBPS/content.opf"])
+	}
+}
+
 func TestTitleFallsBackToUntitled(t *testing.T) {
 	_, files := readEPUB(t, "just a paragraph, no heading\n", ".")
 	if !strings.Contains(files["OEBPS/content.opf"], "<dc:title>Untitled</dc:title>") {
