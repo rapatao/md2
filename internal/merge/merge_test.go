@@ -22,7 +22,7 @@ func TestInputsSingleUnchanged(t *testing.T) {
 	a := filepath.Join(dir, "a.md")
 	writeFile(t, a, "# A\n\n![fig](fig.png)\n")
 
-	got, err := Inputs([]string{a})
+	got, err := Inputs([]string{a}, nil)
 	if err != nil {
 		t.Fatalf("Inputs: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestInputsJoinsWithBlankLine(t *testing.T) {
 	writeFile(t, a, "first")
 	writeFile(t, b, "second")
 
-	got, err := Inputs([]string{a, b})
+	got, err := Inputs([]string{a, b}, nil)
 	if err != nil {
 		t.Fatalf("Inputs: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestInputsRewritesImagesPerOwnDir(t *testing.T) {
 	writeFile(t, a, "![x](fig.png)")
 	writeFile(t, b, "![y](../shared/fig.png)")
 
-	got, err := Inputs([]string{a, b})
+	got, err := Inputs([]string{a, b}, nil)
 	if err != nil {
 		t.Fatalf("Inputs: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestInputsLeavesAbsoluteAndURLImagesAlone(t *testing.T) {
 	writeFile(t, a, "![abs](/already/absolute.png)")
 	writeFile(t, b, "![url](https://example.com/fig.png)")
 
-	got, err := Inputs([]string{a, b})
+	got, err := Inputs([]string{a, b}, nil)
 	if err != nil {
 		t.Fatalf("Inputs: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestInputsLeavesAbsoluteAndURLImagesAlone(t *testing.T) {
 }
 
 func TestInputsMissingFile(t *testing.T) {
-	if _, err := Inputs([]string{filepath.Join(t.TempDir(), "nope.md")}); err == nil {
+	if _, err := Inputs([]string{filepath.Join(t.TempDir(), "nope.md")}, nil); err == nil {
 		t.Fatal("expected error for missing input file")
 	}
 }

@@ -111,7 +111,14 @@ md2 -f html -css extra.css input.md  # append custom CSS after the built-in styl
 md2 -o report.pdf input.md    # explicit output (format from extension)
 md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md  # merge files, in order, into one document
+curl -s https://example.com/readme.md | md2 -f html -o out.html -  # read markdown from stdin
 ```
+
+Pass `-` as the input to read markdown from stdin (the symmetric complement to
+`-stdout`). Because `flag` stops parsing at the first non-flag argument, put
+`-o`/`-f` **before** the `-`. Stdin has no source directory, so an explicit
+`-o` (or `-stdout`) is required, and relative image references resolve against
+the working directory.
 
 Flags:
 

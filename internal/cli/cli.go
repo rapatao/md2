@@ -26,9 +26,10 @@ import (
 
 // Run parses args and performs the requested conversion(s). version is
 // printed for -version and is resolved by the caller (main), which alone
-// knows about build-time ldflags. stdoutWriter is where -stdout streams the
+// knows about build-time ldflags. stdin is read for any "-" input (typically
+// os.Stdin; tests pass a buffer). stdoutWriter is where -stdout streams the
 // converted result (typically os.Stdout; tests pass a buffer).
-func Run(args []string, version string, stdoutWriter io.Writer) error {
+func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer) error {
 	var (
 		output            string
 		format            string
@@ -102,6 +103,12 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		}
 	}
 
+	// Reading from stdin ("-") has no input basename to derive a default
+	// output name from, so an explicit destination is required.
+	if inputs[0] == "-" && output == "" && !stdout {
+		return fmt.Errorf("reading markdown from stdin (-) requires -o or -stdout")
+	}
+
 	// An explicit -o names a single file, so it cannot serve many formats.
 	if output != "" && len(formats) > 1 {
 		return fmt.Errorf("-o cannot be used with multiple formats %v; omit -o or pass one format", formats)
@@ -137,11 +144,15 @@ func Run(args []string, version string, stdoutWriter io.Writer) error {
 		dsts[i] = dst
 	}
 
-	src, err := merge.Inputs(inputs)
+	src, err := merge.Inputs(inputs, stdin)
 	if err != nil {
 		return err
 	}
+	// Stdin has no source directory; relative image refs resolve against cwd.
 	srcPath := inputs[0]
+	if srcPath == "-" {
+		srcPath = "."
+	}
 
 	// -stdout streams the (single) converted result to standard output. With -o
 	// it also writes the file; the "wrote" notice goes to stderr to keep the
