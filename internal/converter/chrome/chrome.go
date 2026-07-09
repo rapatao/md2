@@ -254,14 +254,6 @@ type browserGetter interface {
 	Get() (string, error)
 }
 
-// BrowserPath returns a usable browser path, downloading one (subject to
-// Consent) if none is installed. It is exported so other browser-based
-// callers (the -flatten rasterizer) can reuse the same acquisition and consent
-// policy.
-func BrowserPath() (string, error) {
-	return browserPath()
-}
-
 // browserPath returns the path to a usable browser: an already-installed one,
 // a previously downloaded one, or a freshly downloaded one (with consent).
 func browserPath() (string, error) {
