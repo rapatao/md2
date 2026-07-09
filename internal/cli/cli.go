@@ -11,13 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rapatao/md2/internal/consent"
 	"github.com/rapatao/md2/internal/converter"
-	"github.com/rapatao/md2/internal/converter/chrome"
-	"github.com/rapatao/md2/internal/css"
 	"github.com/rapatao/md2/internal/merge"
-
-	htmlconv "github.com/rapatao/md2/internal/converter/html"
 
 	// Register the remaining output formats via their init funcs.
 	_ "github.com/rapatao/md2/internal/converter/pdf"
@@ -30,213 +25,206 @@ import (
 // os.Stdin; tests pass a buffer). stdoutWriter is where -stdout streams the
 // converted result (typically os.Stdout; tests pass a buffer).
 func Run(args []string, version string, stdin io.Reader, stdoutWriter io.Writer) error {
-	var (
-		output            string
-		format            string
-		render            string
-		cssPath           string
-		plantumlServer    string
-		allowDownload     bool
-		flatten           bool
-		keepDiagramSource bool
-		stdout            bool
-		perFile           bool
-		recursive         bool
-		showVersion       bool
-	)
-
-	fs := flagSet(&output, &format, &render, &cssPath, &plantumlServer, &allowDownload, &flatten, &keepDiagramSource, &stdout, &perFile, &recursive, &showVersion)
+	var o options
+	fs := newFlagSet(&o)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if showVersion {
+	if o.showVersion {
 		fmt.Println("md2", version)
 		return nil
 	}
 
-	// Enable any diagram renderers requested via -render. Off by default.
-	if err := htmlconv.EnableDiagrams(parseList(render)); err != nil {
+	if err := o.apply(); err != nil {
 		return err
 	}
-
-	// -plantuml-server points the plantuml renderer at a PlantUML server; an
-	// empty value keeps the built-in default (the public plantuml.com server).
-	if plantumlServer != "" {
-		htmlconv.PlantUMLServer = plantumlServer
-	}
-
-	// -flatten renders HTML diagrams to static images rather than inlining
-	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
-	htmlconv.Flatten = flatten
-
-	// -keep-diagram-source keeps the original diagram source in the output in
-	// addition to the rendered diagram (rendered first, then the source block).
-	htmlconv.KeepDiagramSource = keepDiagramSource
-
-	// -css appends a user stylesheet after the built-in defaults in HTML
-	// output (and the browser-rendered PDF fallback); the pure-Go PDF path
-	// ignores it.
-	htmlconv.ExtraCSS = ""
-	if cssPath != "" {
-		extraCSS, err := css.Load(cssPath)
-		if err != nil {
-			return fmt.Errorf("reading -css file: %w", err)
-		}
-		htmlconv.ExtraCSS = extraCSS
-	}
-
-	// Decide how the PDF browser fallback may obtain a browser if none exists.
-	chrome.Consent = consent.Policy(allowDownload)
 
 	inputs := fs.Args()
 	if len(inputs) < 1 {
 		fs.Usage()
 		return fmt.Errorf("expected at least one input file, got %d", len(inputs))
 	}
-
-	// A single directory input expands to its .md files (top-level, or the
-	// whole tree with -recursive), ordered folder by folder.
-	if len(inputs) == 1 {
-		if info, err := os.Stat(inputs[0]); err == nil && info.IsDir() {
-			files, err := markdownFiles(inputs[0], recursive)
-			if err != nil {
-				return err
-			}
-			inputs = files
-		}
+	inputs, err := expandDir(inputs, o.recursive)
+	if err != nil {
+		return err
 	}
 
-	// Resolve formats: explicit -f (comma list) > output extension > default pdf.
-	formats := parseList(format)
-	if len(formats) == 0 {
-		if ext := strings.TrimPrefix(filepath.Ext(output), "."); ext != "" {
-			formats = []string{ext}
-		} else {
-			formats = []string{"pdf"}
-		}
-	}
-
-	// Reading from stdin ("-") has no input basename to derive a default
-	// output name from, so an explicit destination is required.
-	if inputs[0] == "-" && output == "" && !stdout {
-		return fmt.Errorf("reading markdown from stdin (-) requires -o or -stdout")
-	}
-
-	// -per-file writes one output per input next to its source, so a single
-	// destination (-o or -stdout) is meaningless with it.
-	if perFile && (output != "" || stdout) {
-		return fmt.Errorf("-per-file cannot be combined with -o/-stdout")
-	}
-
-	// Merging multiple inputs into one document has no obvious output name, so
-	// require an explicit destination (or -per-file to split them instead).
-	if !perFile && len(inputs) > 1 && output == "" && !stdout {
-		return fmt.Errorf("merging %d inputs requires -o (or -per-file to convert each separately)", len(inputs))
-	}
-
-	// An explicit -o names a single file, so it cannot serve many formats.
-	if output != "" && len(formats) > 1 {
-		return fmt.Errorf("-o cannot be used with multiple formats %v; omit -o or pass one format", formats)
-	}
-
-	// -stdout writes to a single stream, so it cannot serve many formats (their
-	// bytes would interleave).
-	if stdout && len(formats) > 1 {
-		return fmt.Errorf("-stdout cannot be used with multiple formats %v; pass one format", formats)
+	formats := resolveFormats(o.format, o.output)
+	if err := validate(&o, inputs, formats); err != nil {
+		return err
 	}
 
 	// Resolve every converter up front so an unknown format fails fast,
 	// before we write any output.
-	convs := make([]converter.Converter, len(formats))
-	for i, format := range formats {
-		conv, err := converter.Get(format)
-		if err != nil {
-			return err
-		}
-		convs[i] = conv
+	convs, err := getConverters(formats)
+	if err != nil {
+		return err
 	}
 
 	// -per-file converts each input independently to its own output next to the
-	// source, rather than merging. One failing input/format must not stop the
-	// rest, so errors are collected and joined.
-	if perFile {
-		var errs []error
-		for _, in := range inputs {
-			src, err := merge.Inputs([]string{in}, stdin)
-			if err != nil {
-				errs = append(errs, err)
-				fmt.Fprintf(os.Stderr, "md2: %v\n", err)
-				continue
-			}
-			for i, format := range formats {
-				dst := strings.TrimSuffix(in, filepath.Ext(in)) + "." + format
-				if err := writeOutput(convs[i], src, in, dst); err != nil {
-					errs = append(errs, err)
-					fmt.Fprintf(os.Stderr, "md2: %v\n", err)
-					continue
-				}
-				fmt.Printf("wrote %s\n", dst)
-			}
-		}
-		return errors.Join(errs...)
+	// source, rather than merging.
+	if o.perFile {
+		return runPerFile(convs, formats, inputs, stdin)
 	}
 
-	// Resolve every output path up front. The format key doubles as the file
-	// extension, and -f deduplicates, so distinct formats never collide.
-	// With multiple inputs, the first one names the merged output.
-	dsts := make([]string, len(formats))
-	for i, format := range formats {
-		dst := output
-		if dst == "" {
-			base := strings.TrimSuffix(inputs[0], filepath.Ext(inputs[0]))
-			dst = base + "." + format
-		}
-		dsts[i] = dst
-	}
-
+	// Merge every input into one document. srcPath resolves relative image
+	// refs; stdin has no directory, so it falls back to cwd.
 	src, err := merge.Inputs(inputs, stdin)
 	if err != nil {
 		return err
 	}
-	// Stdin has no source directory; relative image refs resolve against cwd.
 	srcPath := inputs[0]
 	if srcPath == "-" {
 		srcPath = "."
 	}
 
-	// -stdout streams the (single) converted result to standard output. With -o
-	// it also writes the file; the "wrote" notice goes to stderr to keep the
-	// converted bytes on stdout uncorrupted.
-	if stdout {
-		var buf bytes.Buffer
-		if err := convert(convs[0], src, srcPath, &buf); err != nil {
-			return fmt.Errorf("convert: %w", err)
-		}
-		if output != "" {
-			if err := os.WriteFile(dsts[0], buf.Bytes(), 0o644); err != nil {
-				return fmt.Errorf("create output: %w", err)
-			}
-			fmt.Fprintf(os.Stderr, "wrote %s\n", dsts[0])
-		}
-		if _, err := stdoutWriter.Write(buf.Bytes()); err != nil {
-			return fmt.Errorf("write stdout: %w", err)
-		}
-		return nil
+	dsts := outputPaths(o.output, inputs[0], formats)
+
+	if o.stdout {
+		return runStdout(convs[0], src, srcPath, o.output, dsts[0], stdoutWriter)
 	}
+	return writeEach(convs, srcPath, src, dsts)
+}
 
-	// Convert each format independently: one failing format must not stop the
-	// others (e.g. a PDF render error should still let HTML be written).
+// expandDir replaces a lone directory argument with its .md files (its whole
+// tree with recursive), ordered folder by folder. Any other input list passes
+// through unchanged.
+func expandDir(inputs []string, recursive bool) ([]string, error) {
+	if len(inputs) == 1 {
+		if info, err := os.Stat(inputs[0]); err == nil && info.IsDir() {
+			return markdownFiles(inputs[0], recursive)
+		}
+	}
+	return inputs, nil
+}
+
+// resolveFormats picks the output formats: explicit -f (comma list) wins, else
+// the -o extension, else the default pdf.
+func resolveFormats(format, output string) []string {
+	if formats := parseList(format); len(formats) > 0 {
+		return formats
+	}
+	if ext := strings.TrimPrefix(filepath.Ext(output), "."); ext != "" {
+		return []string{ext}
+	}
+	return []string{"pdf"}
+}
+
+// validate rejects flag/input/format combinations that cannot produce output.
+func validate(o *options, inputs, formats []string) error {
+	switch {
+	// Reading from stdin ("-") has no basename to derive a default output name
+	// from, so an explicit destination is required.
+	case inputs[0] == "-" && o.output == "" && !o.stdout:
+		return fmt.Errorf("reading markdown from stdin (-) requires -o or -stdout")
+
+	// -per-file writes one output per input next to its source, so a single
+	// destination (-o or -stdout) is meaningless with it.
+	case o.perFile && (o.output != "" || o.stdout):
+		return fmt.Errorf("-per-file cannot be combined with -o/-stdout")
+
+	// Merging multiple inputs into one document has no obvious output name, so
+	// require an explicit destination (or -per-file to split them instead).
+	case !o.perFile && len(inputs) > 1 && o.output == "" && !o.stdout:
+		return fmt.Errorf("merging %d inputs requires -o (or -per-file to convert each separately)", len(inputs))
+
+	// An explicit -o names a single file, so it cannot serve many formats.
+	case o.output != "" && len(formats) > 1:
+		return fmt.Errorf("-o cannot be used with multiple formats %v; omit -o or pass one format", formats)
+
+	// -stdout writes to a single stream, so it cannot serve many formats (their
+	// bytes would interleave).
+	case o.stdout && len(formats) > 1:
+		return fmt.Errorf("-stdout cannot be used with multiple formats %v; pass one format", formats)
+	}
+	return nil
+}
+
+// getConverters resolves one converter per format, erroring on the first
+// unknown format.
+func getConverters(formats []string) ([]converter.Converter, error) {
+	convs := make([]converter.Converter, len(formats))
+	for i, format := range formats {
+		conv, err := converter.Get(format)
+		if err != nil {
+			return nil, err
+		}
+		convs[i] = conv
+	}
+	return convs, nil
+}
+
+// outputPaths resolves a destination per format. An explicit -o names the file
+// (validate has ensured it maps to a single format); otherwise the first
+// input's basename gets the format as its extension.
+func outputPaths(output, firstInput string, formats []string) []string {
+	dsts := make([]string, len(formats))
+	for i, format := range formats {
+		if output != "" {
+			dsts[i] = output
+			continue
+		}
+		dsts[i] = strings.TrimSuffix(firstInput, filepath.Ext(firstInput)) + "." + format
+	}
+	return dsts
+}
+
+// runPerFile converts each input independently to its own output next to the
+// source. One failing input/format must not stop the rest, so errors are
+// collected and joined.
+func runPerFile(convs []converter.Converter, formats, inputs []string, stdin io.Reader) error {
 	var errs []error
-	for i := range formats {
-		dst := dsts[i]
-
-		if err := writeOutput(convs[i], src, srcPath, dst); err != nil {
+	for _, in := range inputs {
+		src, err := merge.Inputs([]string{in}, stdin)
+		if err != nil {
 			errs = append(errs, err)
 			fmt.Fprintf(os.Stderr, "md2: %v\n", err)
 			continue
 		}
-		fmt.Printf("wrote %s\n", dst)
+		dsts := make([]string, len(formats))
+		for i, format := range formats {
+			dsts[i] = strings.TrimSuffix(in, filepath.Ext(in)) + "." + format
+		}
+		if err := writeEach(convs, in, src, dsts); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// runStdout streams the single converted result to stdoutWriter. With -o it
+// also writes the file, sending the "wrote" notice to stderr so the converted
+// bytes on stdout stay uncorrupted.
+func runStdout(conv converter.Converter, src []byte, srcPath, output, dst string, stdoutWriter io.Writer) error {
+	var buf bytes.Buffer
+	if err := convert(conv, src, srcPath, &buf); err != nil {
+		return fmt.Errorf("convert: %w", err)
+	}
+	if output != "" {
+		if err := os.WriteFile(dst, buf.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s\n", dst)
+	}
+	if _, err := stdoutWriter.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("write stdout: %w", err)
+	}
+	return nil
+}
+
+// writeEach converts src once per (converter, dst) pair, printing a notice per
+// file. One failing format must not stop the others, so errors are collected
+// and joined.
+func writeEach(convs []converter.Converter, srcPath string, src []byte, dsts []string) error {
+	var errs []error
+	for i, conv := range convs {
+		if err := writeOutput(conv, src, srcPath, dsts[i]); err != nil {
+			errs = append(errs, err)
+			fmt.Fprintf(os.Stderr, "md2: %v\n", err)
+			continue
+		}
+		fmt.Printf("wrote %s\n", dsts[i])
 	}
 	return errors.Join(errs...)
 }
