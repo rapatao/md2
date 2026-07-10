@@ -24,11 +24,11 @@ import (
 // Install the browser-backed hooks into the packages that need them. Those
 // packages cannot import chrome (chrome imports them), so the hooks are wired
 // here instead: the html -flatten diagram rasterizer, and the epub mermaid
-// rasterizer (an ebook reader has no JS runtime, so mermaid is pre-rendered to
-// a static image).
+// renderer (an ebook reader has no JS runtime, so mermaid is pre-rendered to
+// inline SVG).
 func init() {
 	htmlconv.Rasterizer = Rasterize
-	epub.MermaidRasterizer = RasterizeMermaid
+	epub.MermaidRenderer = RenderMermaidSVG
 }
 
 // mermaidTimeout bounds how long we wait for client-side mermaid rendering to
@@ -203,27 +203,17 @@ func Rasterize(doc []byte) (out []byte, err error) {
 	return out, err
 }
 
-// RasterizeMermaid renders a single mermaid diagram's source to a PNG snapshot,
-// for the EPUB converter (installed as epub.MermaidRasterizer). theme selects
-// mermaid's color theme so the caller can produce a light and a dark variant;
-// "dark" gets an opaque dark backdrop, anything else an opaque white one, so the
-// snapshot stays legible on the page it lands on. It loads the diagram in a
-// headless browser, lets the mermaid script draw it, and captures the rendered
-// SVG. Any error (including no browser available) is returned so the caller can
-// fall back to leaving the diagram source in place.
-func RasterizeMermaid(source []byte, theme string) ([]byte, error) {
+// RenderMermaidSVG renders a single mermaid diagram's source to standalone SVG
+// markup, for the EPUB converter (installed as epub.MermaidRenderer). It loads
+// the diagram in a headless browser, lets the mermaid script draw it, and reads
+// back the rendered <svg> element's markup for inlining — vector content the way
+// d2/plantuml are, which ebook readers do not dim in dark mode the way they do a
+// raster <img>. Any error (including no browser available) is returned so the
+// caller can fall back to leaving the diagram source in place.
+func RenderMermaidSVG(source []byte, theme string) ([]byte, error) {
 	doc := htmlconv.MermaidStandalonePage(source, theme)
-	backdrop := "#fff"
-	if theme == "dark" {
-		backdrop = "#0d1117"
-	}
-	var png []byte
+	var svg []byte
 	err := withPage(func(page *rod.Page) error {
-		if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-			Width: 1280, Height: 1024,
-		}); err != nil {
-			return fmt.Errorf("set viewport: %w", err)
-		}
 		if err := page.SetDocumentContent(string(doc)); err != nil {
 			return fmt.Errorf("set page content: %w", err)
 		}
@@ -231,17 +221,18 @@ func RasterizeMermaid(source []byte, theme string) ([]byte, error) {
 			return fmt.Errorf("wait for page load: %w", err)
 		}
 		waitMermaid(page)
-		if _, err := page.Eval(`(bg) => { document.body.style.background = bg; }`, backdrop); err != nil {
-			return fmt.Errorf("set background: %w", err)
-		}
-		el, err := page.Element("pre.mermaid")
+		el, err := page.Element("pre.mermaid svg")
 		if err != nil {
 			return fmt.Errorf("find diagram: %w", err)
 		}
-		png, err = snapshotDiagram(page, el)
-		return err
+		markup, err := el.HTML()
+		if err != nil {
+			return fmt.Errorf("read diagram svg: %w", err)
+		}
+		svg = []byte(markup)
+		return nil
 	})
-	return png, err
+	return svg, err
 }
 
 // diagramScale renders diagram snapshots at this device-pixel ratio so the PNGs

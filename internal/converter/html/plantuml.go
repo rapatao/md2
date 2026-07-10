@@ -23,6 +23,44 @@ var PlantUMLServer = "https://www.plantuml.com/plantuml"
 // plantumlTimeout bounds a single diagram render request to the PlantUML server.
 const plantumlTimeout = 30 * time.Second
 
+// darkSkinparams recolor a PlantUML diagram for a dark background. Prepended
+// after the @start directive; generic enough to cover the common diagram types.
+const darkSkinparams = "skinparam backgroundColor #0d1117\n" +
+	"skinparam defaultFontColor #c9d1d9\n" +
+	"skinparam ArrowColor #8b949e\n" +
+	"skinparam ArrowFontColor #c9d1d9\n" +
+	"skinparam BorderColor #8b949e\n" +
+	"skinparam shadowing false\n" +
+	"skinparam ParticipantBackgroundColor #21262d\n" +
+	"skinparam ParticipantBorderColor #8b949e\n" +
+	"skinparam ParticipantFontColor #c9d1d9\n" +
+	"skinparam ActorBackgroundColor #21262d\n" +
+	"skinparam ActorBorderColor #8b949e\n" +
+	"skinparam ActorFontColor #c9d1d9\n" +
+	"skinparam SequenceLifeLineBorderColor #8b949e\n" +
+	"skinparam NoteBackgroundColor #21262d\n" +
+	"skinparam NoteBorderColor #8b949e\n" +
+	"skinparam NoteFontColor #c9d1d9\n" +
+	"skinparam ClassBackgroundColor #21262d\n" +
+	"skinparam ClassBorderColor #8b949e\n"
+
+var startDirectiveRe = regexp.MustCompile(`(?m)^@start\w*.*$`)
+
+// RenderPlantUML renders a plantuml diagram to SVG. dark injects skinparams for
+// a dark-mode variant. Exposed for the EPUB converter, which renders a light and
+// a dark variant of each diagram.
+func RenderPlantUML(src []byte, dark bool) ([]byte, error) {
+	if dark {
+		if loc := startDirectiveRe.FindIndex(src); loc != nil {
+			tail := append([]byte("\n"+darkSkinparams), src[loc[1]:]...)
+			src = append(append([]byte(nil), src[:loc[1]]...), tail...)
+		} else {
+			src = append([]byte(darkSkinparams), src...)
+		}
+	}
+	return renderPlantUML(src)
+}
+
 // renderPlantUML encodes a plantuml diagram's source per PlantUML's text
 // encoding, fetches the rendered SVG from PlantUMLServer, and returns it ready
 // to inline into an HTML body (the leading <?xml?>/<!DOCTYPE> prolog is

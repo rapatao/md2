@@ -247,69 +247,68 @@ func TestCodeBlockHighlighted(t *testing.T) {
 	}
 }
 
-func TestMermaidRasterizedToImage(t *testing.T) {
+func TestMermaidInlinedDualTheme(t *testing.T) {
 	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
 		t.Fatalf("EnableDiagrams: %v", err)
 	}
-	// Distinct bytes per theme so we can tell the variants apart.
-	MermaidRasterizer = func(_ []byte, theme string) ([]byte, error) {
-		return []byte("PNG-" + theme), nil
+	// Echo the theme so we can tell the two variants apart.
+	MermaidRenderer = func(_ []byte, theme string) ([]byte, error) {
+		return []byte(`<svg xmlns="http://www.w3.org/2000/svg" data-theme="` + theme + `"></svg>`), nil
 	}
-	t.Cleanup(func() { MermaidRasterizer = nil })
+	t.Cleanup(func() { MermaidRenderer = nil })
 
 	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
-
-	if files["OEBPS/images/dgm1.png"] != "PNG-" {
-		t.Errorf("light mermaid variant not packaged: %q", files["OEBPS/images/dgm1.png"])
-	}
-	if files["OEBPS/images/dgm1-dark.png"] != "PNG-dark" {
-		t.Errorf("dark mermaid variant not packaged: %q", files["OEBPS/images/dgm1-dark.png"])
-	}
 	chapter := files["OEBPS/content.xhtml"]
-	// A <picture> switches variants on the reader's color scheme.
-	if !strings.Contains(chapter, `<source srcset="images/dgm1-dark.png" type="image/png" media="(prefers-color-scheme: dark)"/>`) {
-		t.Errorf("dark <source> missing: %q", chapter)
+	// A light + dark variant wrapped in a prefers-color-scheme toggle.
+	if !strings.Contains(chapter, `<span class="md2-light"><svg`) ||
+		!strings.Contains(chapter, `<span class="md2-dark"><svg`) {
+		t.Errorf("mermaid not emitted as light/dark variants: %q", chapter)
 	}
-	if !strings.Contains(chapter, `<img src="images/dgm1.png"`) {
-		t.Errorf("light <img> fallback missing: %q", chapter)
+	if !strings.Contains(chapter, `data-theme=""`) || !strings.Contains(chapter, `data-theme="dark"`) {
+		t.Errorf("light and dark themes not both rendered: %q", chapter)
 	}
-	if strings.Contains(chapter, `class="mermaid"`) {
-		t.Errorf("mermaid source left in chapter after rasterizing: %q", chapter)
+	// Each variant gets its own backdrop rect (white light, dark dark).
+	if !strings.Contains(chapter, `fill="#ffffff"/>`) || !strings.Contains(chapter, `fill="#0d1117"/>`) {
+		t.Errorf("variant backdrop rects missing: %q", chapter)
 	}
-	for _, href := range []string{"images/dgm1.png", "images/dgm1-dark.png"} {
-		if !strings.Contains(files["OEBPS/content.opf"], `href="`+href+`" media-type="image/png"`) {
-			t.Errorf("mermaid image %s not declared in manifest: %q", href, files["OEBPS/content.opf"])
-		}
+	if strings.Contains(chapter, `class="mermaid"`) || strings.Contains(chapter, "<img") {
+		t.Errorf("mermaid should be inline SVG variants, not source/<img>: %q", chapter)
+	}
+	// The toggle CSS swaps variants by color scheme.
+	css := files["OEBPS/style.css"]
+	if !strings.Contains(css, ".md2-dark{display:none}") || !strings.Contains(css, ".md2-light{display:none}") {
+		t.Errorf("diagram color-scheme toggle CSS missing: %q", css)
 	}
 }
 
-func TestMermaidLeftAsSourceWhenRasterizerFails(t *testing.T) {
+func TestMermaidLeftAsSourceWhenRendererFails(t *testing.T) {
 	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
 		t.Fatalf("EnableDiagrams: %v", err)
 	}
-	MermaidRasterizer = func([]byte, string) ([]byte, error) { return nil, errors.New("no browser") }
-	t.Cleanup(func() { MermaidRasterizer = nil })
+	MermaidRenderer = func([]byte, string) ([]byte, error) { return nil, errors.New("no browser") }
+	t.Cleanup(func() { MermaidRenderer = nil })
 
 	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
-	chapter := files["OEBPS/content.xhtml"]
-	if !strings.Contains(chapter, `class="mermaid"`) {
-		t.Errorf("mermaid source should be kept when rasterizing fails: %q", chapter)
-	}
-	if strings.Contains(chapter, "images/dgm") {
-		t.Errorf("no diagram image should be packaged on failure: %q", chapter)
+	if !strings.Contains(files["OEBPS/content.xhtml"], `class="mermaid"`) {
+		t.Errorf("mermaid source should be kept when the renderer fails: %q", files["OEBPS/content.xhtml"])
 	}
 }
 
-func TestDiagramRenderedAsSVG(t *testing.T) {
+func TestD2RenderedDualTheme(t *testing.T) {
 	if err := html.EnableDiagrams([]string{"d2"}); err != nil {
 		t.Fatalf("EnableDiagrams: %v", err)
 	}
+	// d2 renders in-process, so this exercises real light + dark theme output.
 	_, files := readEPUB(t, "# D\n\n```d2\na -> b\n```\n", ".")
 	chapter := files["OEBPS/content.xhtml"]
-	if !strings.Contains(chapter, "<svg") {
-		t.Errorf("d2 diagram not rendered as inline SVG: %q", chapter)
+	if !strings.Contains(chapter, `<span class="md2-light"><svg`) ||
+		!strings.Contains(chapter, `<span class="md2-dark"><svg`) {
+		t.Errorf("d2 not emitted as light/dark variants: %q", chapter)
 	}
-	// Inline SVG must not break XHTML well-formedness.
+	if !strings.Contains(chapter, `fill="#ffffff"/>`) || !strings.Contains(chapter, `fill="#0d1117"/>`) {
+		t.Errorf("d2 variant backdrops missing: %q", chapter)
+	}
+	// Well-formed XML with the inline SVGs.
 	dec := xml.NewDecoder(strings.NewReader(chapter))
 	for {
 		_, err := dec.Token()

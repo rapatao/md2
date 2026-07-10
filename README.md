@@ -9,7 +9,7 @@ Currently supported:
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
 - **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
-- **EPUB** (`.epub`) — EPUB3 ebook (validates with epubcheck). Shares the HTML renderer and styling, so syntax-highlighted code blocks and D2/PlantUML diagrams (as static SVG) carry over; the stylesheet includes a `prefers-color-scheme: dark` variant for readers' dark mode. Mermaid diagrams are pre-rendered to static images in a headless browser (needs a browser at convert time, like the PDF diagram path), in light and dark variants switched via `prefers-color-scheme`. A navigation TOC is built from the document's headings; `dc:title`/`dc:creator` come from `-title`/`-author`. Local images and diagrams are packaged into the archive
+- **EPUB** (`.epub`) — EPUB3 ebook (validates with epubcheck). Shares the HTML renderer, so syntax-highlighted code carries over, and the stylesheet has a `prefers-color-scheme: dark` variant for readers' dark mode. Diagrams (Mermaid, D2, PlantUML) are inlined as SVG in a **light and a dark theme**, toggled by the reader's color scheme, so they stay legible in both (Mermaid needs a browser at convert time, like the PDF diagram path). A navigation TOC is built from the document's headings; `dc:title`/`dc:creator` come from `-title`/`-author`. Local images are packaged into the archive
 
 ## Install
 

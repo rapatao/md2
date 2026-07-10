@@ -193,7 +193,7 @@ func Render(src []byte) ([]byte, error) {
 // diagrams, the mermaid library and an init script are inlined so the diagrams
 // render without any network access.
 func RenderFrom(src []byte, baseDir string) ([]byte, error) {
-	body, css, hasMermaid, err := renderBody(src, false)
+	body, css, hasMermaid, err := renderBody(src, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -237,8 +237,8 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 // converter needs; the HTML path leaves it off. Images are left as their
 // original references; callers embed them (inline data URIs for HTML, packaged
 // archive entries for EPUB).
-func renderBody(src []byte, xhtml bool) ([]byte, string, bool, error) {
-	dr := &diagramRenderer{}
+func renderBody(src []byte, xhtml, asSource bool) ([]byte, string, bool, error) {
+	dr := &diagramRenderer{asSource: asSource}
 	rendererOpts := []renderer.Option{
 		renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
 	}
@@ -284,13 +284,14 @@ func ChromaCSS(style string) string {
 // XHTMLBody renders markdown to a well-formed XHTML body fragment plus the
 // chroma stylesheet for any highlighted code, for the EPUB converter. Unlike
 // RenderFrom it does not wrap the result in a full document and does not inline
-// images — the caller packages them into the archive. d2 and plantuml diagrams
-// are inlined as static SVG (they render at conversion time), so they display in
-// an ebook; a mermaid diagram stays a <pre class="mermaid"> block — it renders
-// client-side only, so without a browser (as in a typical reader) it shows its
-// source rather than a picture.
+// images — the caller packages them into the archive. Enabled diagrams are left
+// as <pre class="lang">source</pre> (asSource mode) rather than rendered, so the
+// EPUB converter can render a light and a dark variant of each and toggle them
+// by the reader's color scheme.
 func XHTMLBody(src []byte) ([]byte, string, error) {
-	body, css, _, err := renderBody(src, true)
+	// asSource: leave enabled diagrams as <pre class="lang">source</pre> so the
+	// EPUB converter renders its own light and dark variants of each.
+	body, css, _, err := renderBody(src, true, true)
 	return body, css, err
 }
 
@@ -457,6 +458,10 @@ type diagramRenderer struct {
 	// highlighted records whether any code block was syntax-highlighted, so
 	// RenderFrom knows to inline the chroma stylesheet.
 	highlighted bool
+	// asSource, when set, emits an enabled diagram as <pre class="lang">source</pre>
+	// instead of rendering it, so a caller (the EPUB converter) can render its own
+	// light and dark variants. Syntax highlighting still applies to normal code.
+	asSource bool
 }
 
 func (r *diagramRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
@@ -469,6 +474,20 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 	}
 	n := node.(*ast.FencedCodeBlock)
 
+	// In asSource mode, hand an enabled diagram's raw source to the caller as
+	// <pre class="lang">source</pre> (mermaid already uses this shape) instead of
+	// rendering it, so the EPUB converter can produce light and dark variants.
+	if r.asSource {
+		if lang := enabledDiagramLang(n, source); lang != "" {
+			w.WriteString(`<pre class="`)
+			w.WriteString(lang)
+			w.WriteString(`">`)
+			writeLines(w, source, n)
+			w.WriteString("</pre>\n")
+			return ast.WalkSkipChildren, nil
+		}
+	}
+
 	switch enabledDiagramLang(n, source) {
 	case "mermaid":
 		w.WriteString(`<pre class="mermaid">`)
@@ -480,7 +499,7 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 			return ast.WalkSkipChildren, nil
 		}
 	case "d2":
-		if svg, err := renderD2(rawLines(source, n)); err != nil {
+		if svg, err := renderD2(rawLines(source, n), 0); err != nil {
 			// A broken diagram must not fail the whole conversion: warn and
 			// fall through to render the block as plain code.
 			fmt.Fprintf(os.Stderr, "md2: d2 render failed: %v\n", err)
@@ -628,19 +647,29 @@ const docHeadOpen = `<!DOCTYPE html>
 `
 
 // MermaidStandalonePage returns a minimal HTML document rendering a single
-// mermaid diagram client-side, for the EPUB rasterizer to load in a headless
-// browser and snapshot to a static image (an ebook reader has no JS runtime, so
-// mermaid must be pre-rendered to an image). theme selects mermaid's color
-// theme (e.g. "dark" for a dark-mode variant; "" keeps the default), so the
-// caller can produce a light and a dark rendering of the same diagram. The
-// init script signals completion via window.__md2MermaidDone, which the
-// rasterizer waits on — the same contract as the inlined HTML/PDF path.
+// mermaid diagram client-side, for the EPUB converter to load in a headless
+// browser and extract the rendered SVG (an ebook reader has no JS runtime, so
+// mermaid is pre-rendered). htmlLabels:false makes mermaid emit SVG <text>
+// labels rather than <foreignObject> HTML, so the extracted SVG is well-formed
+// XML that inlines into the XHTML chapter. The init script signals completion
+// via window.__md2MermaidDone, which the caller waits on — the same contract as
+// the inlined HTML/PDF path.
 func MermaidStandalonePage(source []byte, theme string) []byte {
-	init := "mermaid.initialize({startOnLoad:false"
-	if theme != "" {
-		init += ",theme:'" + theme + "'"
+	// SVG text labels (htmlLabels:false) rather than <foreignObject> HTML, both
+	// for well-formed XHTML and because EPUB readers support SVG text far more
+	// reliably than foreignObject. For the dark variant use the "base" theme with
+	// an explicit dark palette — mermaid's built-in "dark" theme renders too dark
+	// on a near-black page and mis-colors SVG-text labels.
+	themeOpt := ""
+	if theme == "dark" {
+		themeOpt = ",theme:'base',themeVariables:{darkMode:true,background:'#0d1117'," +
+			"primaryColor:'#21262d',primaryTextColor:'#e6edf3',primaryBorderColor:'#8b949e'," +
+			"secondaryColor:'#161b22',tertiaryColor:'#161b22',lineColor:'#8b949e'," +
+			"textColor:'#e6edf3',mainBkg:'#21262d',nodeBorder:'#8b949e'}"
 	}
-	init += "});\nwindow.__md2Mermaid=mermaid.run()" +
+	init := "mermaid.initialize({startOnLoad:false,htmlLabels:false," +
+		"flowchart:{htmlLabels:false}" + themeOpt + "});\n" +
+		"window.__md2Mermaid=mermaid.run()" +
 		".then(function(){window.__md2MermaidDone=true;})" +
 		".catch(function(e){window.__md2MermaidErr=String(e);window.__md2MermaidDone=true;});"
 

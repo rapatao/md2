@@ -13,11 +13,13 @@
 // dark mode. Title and author come from the Title/Author package vars (the
 // -title/-author flags), title falling back to the first heading.
 //
-// mermaid diagrams render client-side via JavaScript, which ebook readers do
-// not run, so each is pre-rendered to a static PNG in a headless browser (via
-// MermaidRasterizer, wired by the chrome package) and packaged as an image. When
-// no browser is available the diagram's source is left in place rather than
-// failing the conversion.
+// Diagrams (mermaid, d2, plantuml) are inlined as SVG in a light and a dark
+// theme, wrapped in a prefers-color-scheme toggle, so they read in both modes —
+// a dark-themed variant is needed because readers like Apple Books force text to
+// their theme color, which only reads on a dark diagram. mermaid renders
+// client-side, so it needs a headless browser (via MermaidRenderer, wired by the
+// chrome package); when none is available the diagram's source is left in place
+// rather than failing. d2 and plantuml render via the html package directly.
 //
 // Local images referenced by relative paths are packaged as real zip entries
 // under OEBPS/images/ and declared in the OPF manifest. Remote (http(s)://) and
@@ -34,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,8 +96,11 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 	}
 
 	body, images := packageImages(body, baseDir)
-	body, images = rasterizeMermaid(body, images)
+	body = inlineDiagrams(body)
 	chapter := wrapChapter(title, string(body))
+	// A chapter carrying inline SVG (mermaid/d2/plantuml) must declare the "svg"
+	// property on its manifest item (EPUB OPF-014).
+	hasSVG := bytes.Contains(body, []byte("<svg"))
 
 	uid, err := newUUID()
 	if err != nil {
@@ -115,7 +121,7 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 
 	files := []struct{ name, content string }{
 		{"META-INF/container.xml", containerXML},
-		{"OEBPS/content.opf", opf(uid, title, Author, images)},
+		{"OEBPS/content.opf", opf(uid, title, Author, images, hasSVG)},
 		{"OEBPS/nav.xhtml", navXHTML(title, headings)},
 		{"OEBPS/style.css", stylesheet(css)},
 		{"OEBPS/content.xhtml", chapter},
@@ -198,54 +204,123 @@ func packageImages(xhtml []byte, baseDir string) ([]byte, []image) {
 	return out, images
 }
 
-// MermaidRasterizer renders a mermaid diagram's source to a PNG in the given
-// theme ("" for the default/light look, "dark" for a dark variant). It is wired
-// by the chrome package (which owns the headless browser); nil when no browser
-// backend is linked, in which case mermaid diagrams keep their source. Mirrors
+// MermaidRenderer renders a mermaid diagram's source to standalone SVG in the
+// given theme ("" default/light, "dark" for the dark variant). Wired by the
+// chrome package (which owns the headless browser); nil when no browser backend
+// is linked, in which case mermaid diagrams keep their source. Mirrors
 // html.Rasterizer's inversion so epub does not import chrome.
-var MermaidRasterizer func(source []byte, theme string) ([]byte, error)
+var MermaidRenderer func(source []byte, theme string) ([]byte, error)
 
-// mermaidPreRe matches a rendered mermaid block: <pre class="mermaid">SOURCE</pre>.
-// html.XHTMLBody emits these (HTML-escaped source) for enabled mermaid diagrams.
-var mermaidPreRe = regexp.MustCompile(`(?s)<pre class="mermaid">(.*?)</pre>`)
+// diagramRe matches a diagram block that html.XHTMLBody left as source:
+// <pre class="mermaid|d2|plantuml">SOURCE</pre>.
+var diagramRe = regexp.MustCompile(`(?s)<pre class="(mermaid|d2|plantuml)">(.*?)</pre>`)
 
-// rasterizeMermaid replaces each rendered mermaid block with packaged PNGs,
-// since ebook readers cannot run mermaid's client-side script. Two variants are
-// rendered — a default (light) one and a dark-themed one — and emitted as a
-// <picture> that switches on prefers-color-scheme, so the diagram stays legible
-// in both light and dark reading modes. With no rasterizer (no browser backend)
-// the block is left as-is; if only the dark variant fails, the light <img> is
-// used alone. A render error never fails the conversion.
-// ponytail: two browser launches per diagram (one per variant). Fine for the
-// handful of diagrams a doc has; batch into one page if it ever gets slow.
-func rasterizeMermaid(body []byte, images []image) ([]byte, []image) {
-	if MermaidRasterizer == nil {
-		return body, images
-	}
-	out := mermaidPreRe.ReplaceAllFunc(body, func(m []byte) []byte {
-		source := []byte(unescapeXML(string(mermaidPreRe.FindSubmatch(m)[1])))
-		light, err := MermaidRasterizer(source, "")
+// inlineDiagrams renders each diagram in a light and a dark theme and emits both
+// as inline SVG wrapped in a prefers-color-scheme toggle (see stylesheet), so
+// diagrams read in both light and dark modes. Inline SVG (not a raster <img>)
+// because readers such as Apple Books dim images in dark mode; and a dark-themed
+// variant because Books forces text to its light theme color, which only reads
+// on a dark diagram. On a render error the block is left as its source (visible,
+// never fails); if only the dark variant fails, the light one is used for both.
+// ponytail: renders each diagram twice; fine for the handful a doc has.
+func inlineDiagrams(body []byte) []byte {
+	n := 0
+	return diagramRe.ReplaceAllFunc(body, func(m []byte) []byte {
+		g := diagramRe.FindSubmatch(m)
+		kind, source := string(g[1]), []byte(unescapeXML(string(g[2])))
+
+		light, err := renderDiagram(kind, source, false)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "md2: cannot render mermaid diagram: %v\n", err)
+			fmt.Fprintf(os.Stderr, "md2: cannot render %s diagram: %v\n", kind, err)
 			return m
 		}
-		n := len(images) + 1
-		lightHref := fmt.Sprintf("images/dgm%d.png", n)
-		images = append(images, image{id: fmt.Sprintf("dgm%d", n), href: lightHref, mime: "image/png", data: light})
-
-		dark, derr := MermaidRasterizer(source, "dark")
-		if derr != nil {
-			// Dark is a nice-to-have; fall back to the single light image.
-			fmt.Fprintf(os.Stderr, "md2: cannot render dark mermaid variant: %v\n", derr)
-			return []byte(fmt.Sprintf(`<img src=%q alt="diagram"/>`, lightHref))
+		dark, err := renderDiagram(kind, source, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "md2: cannot render dark %s variant: %v\n", kind, err)
+			dark = light
 		}
-		darkHref := fmt.Sprintf("images/dgm%d-dark.png", n)
-		images = append(images, image{id: fmt.Sprintf("dgm%dd", n), href: darkHref, mime: "image/png", data: dark})
-		return []byte(fmt.Sprintf(
-			`<picture><source srcset=%q type="image/png" media="(prefers-color-scheme: dark)"/><img src=%q alt="diagram"/></picture>`,
-			darkHref, lightHref))
+		// The two variants (and separate diagrams) can share internal ids —
+		// mermaid's are deterministic — which would be duplicate ids in one XHTML
+		// document. Namespace each SVG's ids so they stay unique.
+		n++
+		light = namespaceSVGIDs(light, fmt.Sprintf("l%d", n))
+		dark = namespaceSVGIDs(dark, fmt.Sprintf("d%d", n))
+		return []byte(`<div class="md2-diagram">` +
+			`<span class="md2-light">` + string(withBackground(light, false)) + `</span>` +
+			`<span class="md2-dark">` + string(withBackground(dark, true)) + `</span>` +
+			`</div>`)
 	})
-	return out, images
+}
+
+var svgIDRe = regexp.MustCompile(`\sid="([^"]+)"`)
+
+// namespaceSVGIDs prefixes every id in an SVG and every reference to it, so the
+// same diagram rendered as two variants — or two diagrams with deterministic ids
+// (mermaid) — don't produce duplicate ids in one document. References are
+// rewritten by exact id value (covering url(#id), href="#id", and the id-scoped
+// selectors mermaid puts in its embedded <style>), rather than a blanket "#"
+// rewrite that would also corrupt hex colors. Longest ids first so one id that
+// is a prefix of another isn't half-rewritten.
+// ponytail: an id spelled exactly like a hex color (e.g. id="abcdef") could
+// touch a matching "#abcdef" color; real mermaid/d2 ids never look like that.
+func namespaceSVGIDs(svg []byte, prefix string) []byte {
+	var ids []string
+	seen := map[string]bool{}
+	for _, m := range svgIDRe.FindAllSubmatch(svg, -1) {
+		if v := string(m[1]); !seen[v] {
+			seen[v] = true
+			ids = append(ids, v)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return len(ids[i]) > len(ids[j]) })
+	for _, v := range ids {
+		svg = bytes.ReplaceAll(svg, []byte(`id="`+v+`"`), []byte(`id="`+prefix+v+`"`))
+		svg = bytes.ReplaceAll(svg, []byte(`#`+v), []byte(`#`+prefix+v))
+	}
+	return svg
+}
+
+// renderDiagram renders one diagram's source to SVG in the light or dark theme.
+// mermaid needs the browser (MermaidRenderer); d2/plantuml render via the html
+// package directly.
+func renderDiagram(kind string, source []byte, dark bool) ([]byte, error) {
+	switch kind {
+	case "mermaid":
+		if MermaidRenderer == nil {
+			return nil, fmt.Errorf("no browser backend for mermaid")
+		}
+		theme := ""
+		if dark {
+			theme = "dark"
+		}
+		return MermaidRenderer(source, theme)
+	case "d2":
+		return html.RenderD2(source, dark)
+	case "plantuml":
+		return html.RenderPlantUML(source, dark)
+	}
+	return nil, fmt.Errorf("unknown diagram %q", kind)
+}
+
+// withBackground injects an opaque backdrop rect as the SVG's first child (white
+// for the light variant, dark for the dark one), so each variant carries its own
+// background as vector content — dark-mode readers dim a raster <img> or CSS
+// background but leave SVG paint alone.
+func withBackground(svg []byte, dark bool) []byte {
+	i := bytes.IndexByte(svg, '>')
+	if i < 0 || !bytes.HasPrefix(svg, []byte("<svg")) {
+		return svg
+	}
+	fill := "#ffffff"
+	if dark {
+		fill = "#0d1117"
+	}
+	rect := []byte(`<rect width="100%" height="100%" fill="` + fill + `"/>`)
+	out := make([]byte, 0, len(svg)+len(rect))
+	out = append(out, svg[:i+1]...)
+	out = append(out, rect...)
+	out = append(out, svg[i+1:]...)
+	return out
 }
 
 // imageMIME guesses an image MIME type from a file extension, defaulting to PNG.
@@ -348,11 +423,15 @@ const containerXML = `<?xml version="1.0" encoding="UTF-8"?>
 // opf builds the OPF package document: metadata (title, optional creator), a
 // manifest of every archive resource (nav, chapter, css, images), and a
 // single-item spine.
-func opf(uid, title, author string, images []image) string {
+func opf(uid, title, author string, images []image, hasSVG bool) string {
 	modified := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	creator := ""
 	if author != "" {
 		creator = fmt.Sprintf("\n    <dc:creator>%s</dc:creator>", escapeXML(author))
+	}
+	contentProps := ""
+	if hasSVG {
+		contentProps = ` properties="svg"`
 	}
 	var manifest strings.Builder
 	for _, img := range images {
@@ -369,14 +448,14 @@ func opf(uid, title, author string, images []image) string {
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
+    <item id="content" href="content.xhtml" media-type="application/xhtml+xml"%s/>
     <item id="css" href="style.css" media-type="text/css"/>
 %s  </manifest>
   <spine>
     <itemref idref="content"/>
   </spine>
 </package>
-`, uid, escapeXML(title), creator, modified, manifest.String())
+`, uid, escapeXML(title), creator, modified, contentProps, manifest.String())
 }
 
 // navXHTML builds the EPUB3 navigation document: a TOC of the document's
@@ -408,12 +487,19 @@ func navXHTML(title string, headings []heading) string {
 func stylesheet(lightChroma string) string {
 	var b strings.Builder
 	b.WriteString(html.BaseCSS)
+	b.WriteString("\n.md2-diagram svg{max-width:100%}")
+	// Each diagram ships a light and a dark variant; show the one matching the
+	// reader's color scheme. Default (light) shows the light variant; the dark
+	// media block below swaps them. Apple Books honors prefers-color-scheme, so
+	// its dark mode gets the dark-themed diagram whose light text it expects.
+	b.WriteString("\n.md2-dark{display:none}")
 	if lightChroma != "" {
 		b.WriteString("\n")
 		b.WriteString(forceCodeColor(lightChroma))
 	}
 	b.WriteString("\n@media (prefers-color-scheme: dark){\n")
 	b.WriteString(darkBaseCSS)
+	b.WriteString("\n.md2-light{display:none}\n.md2-dark{display:inline}")
 	if lightChroma != "" {
 		b.WriteString("\n")
 		b.WriteString(forceCodeColor(html.ChromaCSS("github-dark")))
