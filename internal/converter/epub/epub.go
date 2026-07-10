@@ -10,8 +10,8 @@
 // (verified with epubcheck), and the shared base stylesheet (html.BaseCSS) plus
 // the chroma highlight styles are written to a packaged style.css, with a
 // prefers-color-scheme:dark block so the document stays readable in a reader's
-// dark mode. Title and author come from the Title/Author package vars (the
-// -title/-author flags), title falling back to the first heading.
+// dark mode. dc:title/dc:creator come from html.Title/html.Author (the shared
+// -title/-author flags), title falling back to the first heading then "Untitled".
 //
 // Diagrams (mermaid, d2, plantuml) are inlined as SVG in a light and a dark
 // theme, wrapped in a prefers-color-scheme toggle, so they read in both modes —
@@ -43,14 +43,6 @@ import (
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/html"
 	"github.com/rapatao/md2/internal/urlref"
-)
-
-// Author and Title set the EPUB's dc:creator and dc:title metadata, from the
-// -author and -title CLI flags. An empty Title falls back to the document's
-// first heading (then "Untitled"); an empty Author omits dc:creator.
-var (
-	Author string
-	Title  string
 )
 
 // Converter renders markdown source to an EPUB3 document.
@@ -86,7 +78,7 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 	// Headings (with the ids html.XHTMLBody already generated) drive both the
 	// title fallback and the navigation TOC, so they resolve to the same anchors.
 	headings := collectHeadings(body)
-	title := Title
+	title := html.Title
 	if title == "" {
 		if len(headings) > 0 {
 			title = headings[0].text
@@ -121,7 +113,7 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 
 	files := []struct{ name, content string }{
 		{"META-INF/container.xml", containerXML},
-		{"OEBPS/content.opf", opf(uid, title, Author, images, hasSVG)},
+		{"OEBPS/content.opf", opf(uid, title, html.Author, images, hasSVG)},
 		{"OEBPS/nav.xhtml", navXHTML(title, headings)},
 		{"OEBPS/style.css", stylesheet(css)},
 		{"OEBPS/content.xhtml", chapter},

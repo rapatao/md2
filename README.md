@@ -106,7 +106,7 @@ md2 input.md                  # writes input.pdf (default format)
 md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f epub input.md          # writes input.epub (EPUB3 ebook)
-md2 -f epub -author "Jane Doe" -title "My Manual" input.md  # epub with metadata
+md2 -f epub -author "Jane Doe" -title "My Manual" input.md  # set title/author metadata (any format)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
 md2 -f html -render plantuml input.md          # render plantuml diagrams via a PlantUML server
@@ -138,8 +138,8 @@ Flags:
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
 - `-per-file` with multiple inputs (several files, or a directory) convert each to its own output next to its source instead of merging into one document. Cannot be combined with `-o`/`-stdout` (which name a single destination).
 - `-recursive` when the input is a directory, also pick up `.md` files in sub-directories, ordered folder by folder (a folder's own files first, then its sub-folders). Default: top-level `*.md` only.
-- `-author` (EPUB only) author metadata written as `dc:creator`.
-- `-title` (EPUB only) title metadata (`dc:title`); defaults to the document's first heading.
+- `-author` document author metadata: EPUB `dc:creator`, HTML `<meta name="author">`, PDF author.
+- `-title` document title metadata (EPUB `dc:title`, HTML `<title>`, PDF title); defaults to the document's first heading.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.

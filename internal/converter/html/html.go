@@ -130,6 +130,55 @@ var KeepDiagramSource bool
 // has no HTML/CSS layer. Set from the -css CLI flag.
 var ExtraCSS string
 
+// Title and Author are document metadata shared across output formats, set from
+// the -title and -author CLI flags. They live here because html is the renderer
+// every format depends on: the HTML <title>/<meta author>, the browser-rendered
+// PDF's title, the pure-Go PDF's info dictionary, and the EPUB's dc:title/creator
+// all derive from them. An empty Title falls back to the document's first heading
+// (see DocumentTitle); an empty Author omits author metadata.
+var (
+	Title  string
+	Author string
+)
+
+// FirstHeading returns the plain text of the document's first heading, or "" if
+// there is none.
+func FirstHeading(src []byte) string {
+	doc := goldmark.New(goldmark.WithExtensions(extension.GFM)).
+		Parser().Parse(text.NewReader(src))
+	title := ""
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		h, ok := n.(*ast.Heading)
+		if !entering || !ok {
+			return ast.WalkContinue, nil
+		}
+		var b strings.Builder
+		_ = ast.Walk(h, func(c ast.Node, e bool) (ast.WalkStatus, error) {
+			if e {
+				switch t := c.(type) {
+				case *ast.Text:
+					b.Write(t.Segment.Value(src))
+				case *ast.String:
+					b.Write(t.Value)
+				}
+			}
+			return ast.WalkContinue, nil
+		})
+		title = b.String()
+		return ast.WalkStop, nil
+	})
+	return title
+}
+
+// DocumentTitle returns Title, or the document's first heading when Title is
+// unset (may be ""). Shared by every output format's title metadata.
+func DocumentTitle(src []byte) string {
+	if Title != "" {
+		return Title
+	}
+	return FirstHeading(src)
+}
+
 // highlightStyle is the chroma theme used to color fenced code blocks. "github"
 // is light, so it blends with the light HTML document. The pure-Go PDF path
 // (internal/converter/pdf) uses the same style for consistent output.
@@ -204,6 +253,16 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 
 	var out bytes.Buffer
 	out.WriteString(docHeadOpen)
+	if t := DocumentTitle(src); t != "" {
+		out.WriteString("<title>")
+		htmlEscaper.WriteString(&out, t)
+		out.WriteString("</title>\n")
+	}
+	if Author != "" {
+		out.WriteString(`<meta name="author" content="`)
+		htmlEscaper.WriteString(&out, Author)
+		out.WriteString("\">\n")
+	}
 	// Inject the chroma stylesheet only when a block was actually highlighted,
 	// before any ExtraCSS so -css can override highlight colors via the cascade.
 	if css != "" {

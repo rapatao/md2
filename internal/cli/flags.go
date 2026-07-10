@@ -10,7 +10,6 @@ import (
 	"github.com/rapatao/md2/internal/converter/chrome"
 	"github.com/rapatao/md2/internal/css"
 
-	epubconv "github.com/rapatao/md2/internal/converter/epub"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
@@ -29,8 +28,8 @@ type options struct {
 	perFile           bool
 	recursive         bool
 	showVersion       bool
-	epubAuthor        string
-	epubTitle         string
+	docAuthor         string
+	docTitle          string
 }
 
 // newFlagSet builds the CLI flag set with its flags bound to o.
@@ -48,8 +47,8 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.BoolVar(&o.stdout, "stdout", false, "write the converted result to standard output instead of a file (single format only; also writes a file when -o is given)")
 	fs.BoolVar(&o.perFile, "per-file", false, "with multiple inputs (or a directory), convert each to its own output next to its source instead of merging (cannot be combined with -o/-stdout)")
 	fs.BoolVar(&o.recursive, "recursive", false, "when the input is a directory, also pick up .md files in sub-directories (folder by folder)")
-	fs.StringVar(&o.epubAuthor, "author", "", "EPUB only: author metadata (dc:creator)")
-	fs.StringVar(&o.epubTitle, "title", "", "EPUB only: title metadata (dc:title); defaults to the document's first heading")
+	fs.StringVar(&o.docAuthor, "author", "", "document author metadata (EPUB dc:creator, HTML/PDF author)")
+	fs.StringVar(&o.docTitle, "title", "", "document title metadata (EPUB/HTML/PDF); defaults to the first heading")
 	fs.BoolVar(&o.showVersion, "version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: md2 [-o output] [-f format] [-render diagrams] [-flatten] [-user-agent ua] [-keep-diagram-source] [-css file] [-plantuml-server url] [-stdout] [-per-file] [-recursive] input.md [input2.md ...] | dir/")
@@ -97,9 +96,9 @@ func (o *options) apply() error {
 		htmlconv.ExtraCSS = extraCSS
 	}
 
-	// EPUB metadata (ignored by other formats).
-	epubconv.Author = o.epubAuthor
-	epubconv.Title = o.epubTitle
+	// Document metadata, shared across output formats.
+	htmlconv.Title = o.docTitle
+	htmlconv.Author = o.docAuthor
 
 	// Decide how the PDF browser fallback may obtain a browser if none exists.
 	chrome.Consent = consent.Policy(o.allowDownload)

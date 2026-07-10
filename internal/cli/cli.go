@@ -14,9 +14,8 @@ import (
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/merge"
 
-	// Register the remaining output formats via their init funcs. (epub is
-	// imported by name in flags.go for its metadata options, which also
-	// registers it.)
+	// Register the remaining output formats via their init funcs.
+	_ "github.com/rapatao/md2/internal/converter/epub"
 	_ "github.com/rapatao/md2/internal/converter/pdf"
 	_ "github.com/rapatao/md2/internal/converter/text"
 )

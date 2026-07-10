@@ -114,8 +114,8 @@ func TestTitleFallsBackToUntitled(t *testing.T) {
 }
 
 func TestAuthorAndTitleMetadata(t *testing.T) {
-	Author, Title = "Jane Doe", "My Manual"
-	t.Cleanup(func() { Author, Title = "", "" })
+	html.Author, html.Title = "Jane Doe", "My Manual"
+	t.Cleanup(func() { html.Author, html.Title = "", "" })
 	_, files := readEPUB(t, "# Ignored Heading\n\nbody\n", ".")
 	opf := files["OEBPS/content.opf"]
 	if !strings.Contains(opf, "<dc:title>My Manual</dc:title>") {
