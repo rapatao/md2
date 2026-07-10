@@ -204,12 +204,19 @@ func Rasterize(doc []byte) (out []byte, err error) {
 }
 
 // RasterizeMermaid renders a single mermaid diagram's source to a PNG snapshot,
-// for the EPUB converter (installed as epub.MermaidRasterizer). It loads the
-// diagram in a headless browser, lets the mermaid script draw it, and captures
-// the rendered SVG. Any error (including no browser available) is returned so
-// the caller can fall back to leaving the diagram source in place.
-func RasterizeMermaid(source []byte) ([]byte, error) {
-	doc := htmlconv.MermaidStandalonePage(source)
+// for the EPUB converter (installed as epub.MermaidRasterizer). theme selects
+// mermaid's color theme so the caller can produce a light and a dark variant;
+// "dark" gets an opaque dark backdrop, anything else an opaque white one, so the
+// snapshot stays legible on the page it lands on. It loads the diagram in a
+// headless browser, lets the mermaid script draw it, and captures the rendered
+// SVG. Any error (including no browser available) is returned so the caller can
+// fall back to leaving the diagram source in place.
+func RasterizeMermaid(source []byte, theme string) ([]byte, error) {
+	doc := htmlconv.MermaidStandalonePage(source, theme)
+	backdrop := "#fff"
+	if theme == "dark" {
+		backdrop = "#0d1117"
+	}
 	var png []byte
 	err := withPage(func(page *rod.Page) error {
 		if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
@@ -224,8 +231,7 @@ func RasterizeMermaid(source []byte) ([]byte, error) {
 			return fmt.Errorf("wait for page load: %w", err)
 		}
 		waitMermaid(page)
-		// Opaque white backdrop so the snapshot stays legible wherever it lands.
-		if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
+		if _, err := page.Eval(`(bg) => { document.body.style.background = bg; }`, backdrop); err != nil {
 			return fmt.Errorf("set background: %w", err)
 		}
 		el, err := page.Element("pre.mermaid")

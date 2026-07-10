@@ -2,13 +2,16 @@
 // Importing it (for side effects) registers the "epub" format.
 //
 // The output is an OCF zip container: a stored "mimetype" entry, an OPF package
-// document, an EPUB3 navigation document, a stylesheet, and one XHTML chapter
-// holding the whole document. The chapter is rendered by the html package's
-// XHTMLBody — the same pipeline as HTML output — so it shares syntax
-// highlighting and d2/plantuml diagrams (inlined as static SVG). XHTMLBody emits
-// well-formed XHTML so the chapter passes EPUB validators, and the shared base
-// stylesheet (html.BaseCSS) plus the chroma highlight styles are written to a
-// packaged style.css so ebooks look like the HTML output.
+// document, an EPUB3 navigation document (a TOC of the document's headings), a
+// stylesheet, and one XHTML chapter holding the whole document. The chapter is
+// rendered by the html package's XHTMLBody — the same pipeline as HTML output —
+// so it shares syntax highlighting and d2/plantuml diagrams (inlined as static
+// SVG). XHTMLBody emits well-formed XHTML so the chapter passes EPUB validators
+// (verified with epubcheck), and the shared base stylesheet (html.BaseCSS) plus
+// the chroma highlight styles are written to a packaged style.css, with a
+// prefers-color-scheme:dark block so the document stays readable in a reader's
+// dark mode. Title and author come from the Title/Author package vars (the
+// -title/-author flags), title falling back to the first heading.
 //
 // mermaid diagrams render client-side via JavaScript, which ebook readers do
 // not run, so each is pre-rendered to a static PNG in a headless browser (via
@@ -37,10 +40,14 @@ import (
 	"github.com/rapatao/md2/internal/converter"
 	"github.com/rapatao/md2/internal/converter/html"
 	"github.com/rapatao/md2/internal/urlref"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
-	gtext "github.com/yuin/goldmark/text"
+)
+
+// Author and Title set the EPUB's dc:creator and dc:title metadata, from the
+// -author and -title CLI flags. An empty Title falls back to the document's
+// first heading (then "Untitled"); an empty Author omits dc:creator.
+var (
+	Author string
+	Title  string
 )
 
 // Converter renders markdown source to an EPUB3 document.
@@ -65,10 +72,6 @@ func convert(src []byte, baseDir string, w io.Writer) error {
 	return err
 }
 
-// titleParser parses markdown solely to extract the document title (first
-// heading). The body itself is rendered by html.XHTMLBody.
-var titleParser = goldmark.New(goldmark.WithExtensions(extension.GFM))
-
 // Render converts markdown into the bytes of a complete EPUB3 file. Relative
 // image references are resolved against baseDir and packaged into the archive.
 func Render(src []byte, baseDir string) ([]byte, error) {
@@ -77,15 +80,21 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 		return nil, err
 	}
 
-	title := firstHeading(src)
+	// Headings (with the ids html.XHTMLBody already generated) drive both the
+	// title fallback and the navigation TOC, so they resolve to the same anchors.
+	headings := collectHeadings(body)
+	title := Title
+	if title == "" {
+		if len(headings) > 0 {
+			title = headings[0].text
+		} else {
+			title = "Untitled"
+		}
+	}
+
 	body, images := packageImages(body, baseDir)
 	body, images = rasterizeMermaid(body, images)
 	chapter := wrapChapter(title, string(body))
-
-	stylesheet := html.BaseCSS
-	if css != "" {
-		stylesheet += "\n" + css
-	}
 
 	uid, err := newUUID()
 	if err != nil {
@@ -106,9 +115,9 @@ func Render(src []byte, baseDir string) ([]byte, error) {
 
 	files := []struct{ name, content string }{
 		{"META-INF/container.xml", containerXML},
-		{"OEBPS/content.opf", opf(uid, title, images)},
-		{"OEBPS/nav.xhtml", navXHTML(title)},
-		{"OEBPS/style.css", stylesheet},
+		{"OEBPS/content.opf", opf(uid, title, Author, images)},
+		{"OEBPS/nav.xhtml", navXHTML(title, headings)},
+		{"OEBPS/style.css", stylesheet(css)},
 		{"OEBPS/content.xhtml", chapter},
 	}
 	for _, f := range files {
@@ -189,45 +198,52 @@ func packageImages(xhtml []byte, baseDir string) ([]byte, []image) {
 	return out, images
 }
 
-// MermaidRasterizer renders a mermaid diagram's source to a PNG. It is wired by
-// the chrome package (which owns the headless browser); nil when no browser
+// MermaidRasterizer renders a mermaid diagram's source to a PNG in the given
+// theme ("" for the default/light look, "dark" for a dark variant). It is wired
+// by the chrome package (which owns the headless browser); nil when no browser
 // backend is linked, in which case mermaid diagrams keep their source. Mirrors
 // html.Rasterizer's inversion so epub does not import chrome.
-var MermaidRasterizer func(source []byte) ([]byte, error)
+var MermaidRasterizer func(source []byte, theme string) ([]byte, error)
 
 // mermaidPreRe matches a rendered mermaid block: <pre class="mermaid">SOURCE</pre>.
 // html.XHTMLBody emits these (HTML-escaped source) for enabled mermaid diagrams.
 var mermaidPreRe = regexp.MustCompile(`(?s)<pre class="mermaid">(.*?)</pre>`)
 
-// rasterizeMermaid replaces each rendered mermaid block with a packaged PNG
-// <img>, since ebook readers cannot run mermaid's client-side script. Each
-// diagram's source is unescaped and rendered to a PNG via MermaidRasterizer,
-// added to images, and the <pre> swapped for an <img>. With no rasterizer
-// (no browser backend) or on a render error, the block is left as-is so its
-// source is at least visible and the conversion never fails.
-// ponytail: one browser launch per diagram (MermaidRasterizer opens its own
-// page). Fine for the handful of diagrams a doc has; batch into one page if a
-// mermaid-heavy doc ever makes it slow.
+// rasterizeMermaid replaces each rendered mermaid block with packaged PNGs,
+// since ebook readers cannot run mermaid's client-side script. Two variants are
+// rendered — a default (light) one and a dark-themed one — and emitted as a
+// <picture> that switches on prefers-color-scheme, so the diagram stays legible
+// in both light and dark reading modes. With no rasterizer (no browser backend)
+// the block is left as-is; if only the dark variant fails, the light <img> is
+// used alone. A render error never fails the conversion.
+// ponytail: two browser launches per diagram (one per variant). Fine for the
+// handful of diagrams a doc has; batch into one page if it ever gets slow.
 func rasterizeMermaid(body []byte, images []image) ([]byte, []image) {
 	if MermaidRasterizer == nil {
 		return body, images
 	}
 	out := mermaidPreRe.ReplaceAllFunc(body, func(m []byte) []byte {
-		source := unescapeXML(string(mermaidPreRe.FindSubmatch(m)[1]))
-		png, err := MermaidRasterizer([]byte(source))
+		source := []byte(unescapeXML(string(mermaidPreRe.FindSubmatch(m)[1])))
+		light, err := MermaidRasterizer(source, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "md2: cannot render mermaid diagram: %v\n", err)
 			return m
 		}
 		n := len(images) + 1
-		href := fmt.Sprintf("images/dgm%d.png", n)
-		images = append(images, image{
-			id:   fmt.Sprintf("dgm%d", n),
-			href: href,
-			mime: "image/png",
-			data: png,
-		})
-		return []byte(fmt.Sprintf(`<img src=%q alt="diagram"/>`, href))
+		lightHref := fmt.Sprintf("images/dgm%d.png", n)
+		images = append(images, image{id: fmt.Sprintf("dgm%d", n), href: lightHref, mime: "image/png", data: light})
+
+		dark, derr := MermaidRasterizer(source, "dark")
+		if derr != nil {
+			// Dark is a nice-to-have; fall back to the single light image.
+			fmt.Fprintf(os.Stderr, "md2: cannot render dark mermaid variant: %v\n", derr)
+			return []byte(fmt.Sprintf(`<img src=%q alt="diagram"/>`, lightHref))
+		}
+		darkHref := fmt.Sprintf("images/dgm%d-dark.png", n)
+		images = append(images, image{id: fmt.Sprintf("dgm%dd", n), href: darkHref, mime: "image/png", data: dark})
+		return []byte(fmt.Sprintf(
+			`<picture><source srcset=%q type="image/png" media="(prefers-color-scheme: dark)"/><img src=%q alt="diagram"/></picture>`,
+			darkHref, lightHref))
 	})
 	return out, images
 }
@@ -250,41 +266,63 @@ func imageMIME(path string) string {
 	}
 }
 
-// firstHeading returns the plain text of the document's first heading, or
-// "Untitled" if there is none.
-func firstHeading(src []byte) string {
-	doc := titleParser.Parser().Parse(gtext.NewReader(src))
-	title := "Untitled"
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if entering {
-			if h, ok := n.(*ast.Heading); ok {
-				title = headingText(h, src)
-				return ast.WalkStop, nil
-			}
-		}
-		return ast.WalkContinue, nil
-	})
-	return title
+// heading is a document heading for the navigation TOC: its level (1-6), the id
+// html.XHTMLBody assigned it (the in-document anchor), and its plain text.
+type heading struct {
+	level int
+	id    string
+	text  string
 }
 
-// headingText collects a heading's visible text, descending through inline
-// markup (emphasis, code spans, ...) and gathering the text leaves. This
-// replaces the deprecated ast.Node.Text, mirroring how text.go pulls text off
-// the source segments.
-func headingText(h ast.Node, src []byte) string {
+var (
+	headingRe = regexp.MustCompile(`(?is)<h([1-6])[^>]*\bid="([^"]*)"[^>]*>(.*?)</h[1-6]>`)
+	tagRe     = regexp.MustCompile(`<[^>]+>`)
+)
+
+// collectHeadings pulls the headings out of the already-rendered body, reusing
+// the ids html.XHTMLBody generated so the TOC links resolve to the same anchors
+// (rather than re-parsing the markdown and risking divergent ids). The label is
+// the heading with inline markup stripped.
+func collectHeadings(body []byte) []heading {
+	var hs []heading
+	for _, m := range headingRe.FindAllSubmatch(body, -1) {
+		text := strings.TrimSpace(unescapeXML(tagRe.ReplaceAllString(string(m[3]), "")))
+		hs = append(hs, heading{level: int(m[1][0] - '0'), id: string(m[2]), text: text})
+	}
+	return hs
+}
+
+// navList renders the headings as a nested <ol> for the EPUB nav document. The
+// stack tracks the levels of currently-open lists; output is always well-formed
+// even for irregular level sequences (e.g. an h1 followed by an h3).
+func navList(hs []heading) string {
+	li := func(h heading) string {
+		return fmt.Sprintf(`<li><a href="content.xhtml#%s">%s</a>`, h.id, escapeXML(h.text))
+	}
 	var b strings.Builder
-	_ = ast.Walk(h, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
+	var open []int // levels of currently-open <ol>s
+	for _, h := range hs {
+		switch {
+		case len(open) == 0 || h.level > open[len(open)-1]:
+			b.WriteString("<ol>")
+			open = append(open, h.level)
+		default:
+			b.WriteString("</li>")
+			for len(open) > 1 && open[len(open)-1] > h.level {
+				b.WriteString("</ol></li>")
+				open = open[:len(open)-1]
+			}
 		}
-		switch t := n.(type) {
-		case *ast.Text:
-			b.Write(t.Segment.Value(src))
-		case *ast.String:
-			b.Write(t.Value)
+		b.WriteString(li(h))
+	}
+	if len(open) > 0 {
+		b.WriteString("</li>")
+		for len(open) > 1 {
+			b.WriteString("</ol></li>")
+			open = open[:len(open)-1]
 		}
-		return ast.WalkContinue, nil
-	})
+		b.WriteString("</ol>")
+	}
 	return b.String()
 }
 
@@ -307,10 +345,15 @@ const containerXML = `<?xml version="1.0" encoding="UTF-8"?>
 </container>
 `
 
-// opf builds the OPF package document: metadata, a manifest of every archive
-// resource (nav, chapter, images), and a single-item spine.
-func opf(uid, title string, images []image) string {
+// opf builds the OPF package document: metadata (title, optional creator), a
+// manifest of every archive resource (nav, chapter, css, images), and a
+// single-item spine.
+func opf(uid, title, author string, images []image) string {
 	modified := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	creator := ""
+	if author != "" {
+		creator = fmt.Sprintf("\n    <dc:creator>%s</dc:creator>", escapeXML(author))
+	}
 	var manifest strings.Builder
 	for _, img := range images {
 		fmt.Fprintf(&manifest, "    <item id=%q href=%q media-type=%q/>\n",
@@ -320,7 +363,7 @@ func opf(uid, title string, images []image) string {
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">%s</dc:identifier>
-    <dc:title>%s</dc:title>
+    <dc:title>%s</dc:title>%s
     <dc:language>en</dc:language>
     <meta property="dcterms:modified">%s</meta>
   </metadata>
@@ -333,27 +376,80 @@ func opf(uid, title string, images []image) string {
     <itemref idref="content"/>
   </spine>
 </package>
-`, uid, escapeXML(title), modified, manifest.String())
+`, uid, escapeXML(title), creator, modified, manifest.String())
 }
 
-func navXHTML(title string) string {
+// navXHTML builds the EPUB3 navigation document: a TOC of the document's
+// headings so readers list its sections. With no headings it falls back to a
+// single link to the chapter (an empty nav is invalid).
+func navXHTML(title string, headings []heading) string {
+	list := navList(headings)
+	if list == "" {
+		list = fmt.Sprintf(`<ol><li><a href="content.xhtml">%s</a></li></ol>`, escapeXML(title))
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en">
 <head><meta charset="utf-8"/><title>%s</title></head>
 <body>
 <nav epub:type="toc" id="toc">
 <h1>%s</h1>
-<ol><li><a href="content.xhtml">%s</a></li></ol>
+%s
 </nav>
 </body>
 </html>
-`, escapeXML(title), escapeXML(title), escapeXML(title))
+`, escapeXML(title), escapeXML(title), list)
 }
 
-// wrapChapter wraps the rendered body in an XHTML document that links the
-// packaged style.css (base styling + syntax-highlight colors). A linked,
-// manifest-declared stylesheet is the portable way to style EPUB content —
-// more widely honored by readers than an inline <style>.
+// stylesheet builds the packaged style.css: the shared base styling and the
+// light syntax-highlight colors, plus a prefers-color-scheme:dark block so the
+// document stays readable in a reader's dark mode (dark page, dark code box,
+// and github-dark highlight colors). lightChroma is the highlight stylesheet
+// html.XHTMLBody returned.
+func stylesheet(lightChroma string) string {
+	var b strings.Builder
+	b.WriteString(html.BaseCSS)
+	if lightChroma != "" {
+		b.WriteString("\n")
+		b.WriteString(forceCodeColor(lightChroma))
+	}
+	b.WriteString("\n@media (prefers-color-scheme: dark){\n")
+	b.WriteString(darkBaseCSS)
+	if lightChroma != "" {
+		b.WriteString("\n")
+		b.WriteString(forceCodeColor(html.ChromaCSS("github-dark")))
+	}
+	b.WriteString("\n}\n")
+	return b.String()
+}
+
+// codeColorRe matches a `color: #rrggbb` declaration (but not background-color,
+// which is preceded by '-'), capturing the leading delimiter and the value.
+var codeColorRe = regexp.MustCompile(`([;{ ]color:\s*)(#[0-9a-fA-F]{3,8})`)
+
+// forceCodeColor duplicates each chroma `color` into `-webkit-text-fill-color`.
+// Apple Books' reading themes override `color` (to force readable body text) but
+// not `-webkit-text-fill-color`, so this keeps syntax highlighting visible in
+// Books' dark/night mode. Applied only to the highlight stylesheet, so ordinary
+// prose text stays themeable; it lives in the external stylesheet, so a reader's
+// own user stylesheet can still override it.
+func forceCodeColor(css string) string {
+	return codeColorRe.ReplaceAllString(css, `${1}${2};-webkit-text-fill-color:${2}`)
+}
+
+// darkBaseCSS re-colors the base elements for a dark background, mirroring
+// html.BaseCSS's structure. Kept in sync with BaseCSS's element set.
+const darkBaseCSS = `body{background:#0d1117;color:#c9d1d9}
+a{color:#58a6ff}
+th,td{border-color:#30363d}
+th{background:#161b22}
+code,pre,pre.chroma{background:#161b22}
+blockquote{border-color:#30363d;color:#8b949e}`
+
+// wrapChapter wraps the rendered body in an XHTML document linking the packaged
+// style.css. epubcheck confirms the linked, manifest-declared stylesheet is the
+// correct, portable way to style EPUB content; a reader's own theme (e.g. Apple
+// Books dark mode) may still override colors, which the dark media query in
+// style.css accommodates.
 func wrapChapter(title, body string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en">

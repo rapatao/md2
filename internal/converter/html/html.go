@@ -270,6 +270,17 @@ func renderBody(src []byte, xhtml bool) ([]byte, string, bool, error) {
 	return body.Bytes(), css, hasMermaid, nil
 }
 
+// ChromaCSS returns the syntax-highlight stylesheet for the named chroma style
+// (e.g. "github-dark"), for callers that need a variant beyond the default the
+// document uses — the EPUB converter uses it for a prefers-color-scheme:dark
+// block. Token class names are the same across styles, so a dark variant scoped
+// in a dark media query cleanly overrides the light one.
+func ChromaCSS(style string) string {
+	var b bytes.Buffer
+	_ = highlightFormatter.WriteCSS(&b, styles.Get(style))
+	return b.String()
+}
+
 // XHTMLBody renders markdown to a well-formed XHTML body fragment plus the
 // chroma stylesheet for any highlighted code, for the EPUB converter. Unlike
 // RenderFrom it does not wrap the result in a full document and does not inline
@@ -619,17 +630,32 @@ const docHeadOpen = `<!DOCTYPE html>
 // MermaidStandalonePage returns a minimal HTML document rendering a single
 // mermaid diagram client-side, for the EPUB rasterizer to load in a headless
 // browser and snapshot to a static image (an ebook reader has no JS runtime, so
-// mermaid must be pre-rendered to an image). The mermaid library and init
-// script are the same ones the HTML/PDF paths inline.
-func MermaidStandalonePage(source []byte) []byte {
+// mermaid must be pre-rendered to an image). theme selects mermaid's color
+// theme (e.g. "dark" for a dark-mode variant; "" keeps the default), so the
+// caller can produce a light and a dark rendering of the same diagram. The
+// init script signals completion via window.__md2MermaidDone, which the
+// rasterizer waits on — the same contract as the inlined HTML/PDF path.
+func MermaidStandalonePage(source []byte, theme string) []byte {
+	init := "mermaid.initialize({startOnLoad:false"
+	if theme != "" {
+		init += ",theme:'" + theme + "'"
+	}
+	init += "});\nwindow.__md2Mermaid=mermaid.run()" +
+		".then(function(){window.__md2MermaidDone=true;})" +
+		".catch(function(e){window.__md2MermaidErr=String(e);window.__md2MermaidDone=true;});"
+
 	var b bytes.Buffer
 	b.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8">` +
 		`<style>pre.mermaid{background:none;padding:0}</style></head><body>` +
 		`<pre class="mermaid">`)
 	htmlEscaper.WriteString(&b, string(source))
-	b.WriteString("</pre>")
-	b.WriteString(mermaidScript)
-	b.WriteString("</body></html>")
+	b.WriteString("</pre>\n<script>")
+	// </script> can only appear inside a JS string literal in the minified lib;
+	// neutralise it so it cannot close the surrounding <script> element.
+	b.WriteString(strings.ReplaceAll(mermaidJS, "</script>", `<\/script>`))
+	b.WriteString("</script>\n<script>")
+	b.WriteString(init)
+	b.WriteString("</script></body></html>")
 	return b.Bytes()
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -112,6 +113,89 @@ func TestTitleFallsBackToUntitled(t *testing.T) {
 	}
 }
 
+func TestAuthorAndTitleMetadata(t *testing.T) {
+	Author, Title = "Jane Doe", "My Manual"
+	t.Cleanup(func() { Author, Title = "", "" })
+	_, files := readEPUB(t, "# Ignored Heading\n\nbody\n", ".")
+	opf := files["OEBPS/content.opf"]
+	if !strings.Contains(opf, "<dc:title>My Manual</dc:title>") {
+		t.Errorf("-title did not override heading: %q", opf)
+	}
+	if !strings.Contains(opf, "<dc:creator>Jane Doe</dc:creator>") {
+		t.Errorf("author metadata missing: %q", opf)
+	}
+}
+
+func TestNoCreatorWhenAuthorUnset(t *testing.T) {
+	_, files := readEPUB(t, "# H\n\nbody\n", ".")
+	if strings.Contains(files["OEBPS/content.opf"], "<dc:creator>") {
+		t.Errorf("dc:creator should be omitted when no author: %q", files["OEBPS/content.opf"])
+	}
+}
+
+func TestNavListsHeadings(t *testing.T) {
+	md := "# Book\n\n## Chapter One\n\n### Sub A\n\n## Chapter Two\n"
+	_, files := readEPUB(t, md, ".")
+	nav := files["OEBPS/nav.xhtml"]
+	for _, id := range []string{"book", "chapter-one", "sub-a", "chapter-two"} {
+		if !strings.Contains(nav, `href="content.xhtml#`+id+`"`) {
+			t.Errorf("nav missing link to #%s: %q", id, nav)
+		}
+	}
+	// Nesting: Sub A sits in a nested list under Chapter One.
+	if !strings.Contains(nav, "<ol><li>") || !strings.Contains(nav, "</ol></li>") {
+		t.Errorf("nav TOC is not nested: %q", nav)
+	}
+	// The nav ids must match the chapter's heading anchors.
+	if !strings.Contains(files["OEBPS/content.xhtml"], `id="chapter-one"`) {
+		t.Errorf("chapter heading id missing, nav links would dangle")
+	}
+}
+
+func TestNavWellFormedWithLevelSkips(t *testing.T) {
+	// An h1 followed by an h3 (skipping h2) must still yield well-formed XML.
+	_, files := readEPUB(t, "# A\n\n### Deep\n\n## Back\n", ".")
+	dec := xml.NewDecoder(strings.NewReader(files["OEBPS/nav.xhtml"]))
+	for {
+		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("nav.xhtml not well-formed with irregular heading levels: %v", err)
+		}
+	}
+}
+
+func TestDarkModeStylesheet(t *testing.T) {
+	_, files := readEPUB(t, "```go\nx := 1\n```\n", ".")
+	css := files["OEBPS/style.css"]
+	if !strings.Contains(css, "@media (prefers-color-scheme: dark)") {
+		t.Errorf("dark-mode media query missing: %q", css)
+	}
+	if !strings.Contains(css, "#0d1117") {
+		t.Errorf("dark background missing: %q", css)
+	}
+}
+
+func TestCodeColorsForcedForAppleBooks(t *testing.T) {
+	_, files := readEPUB(t, "```go\nx := 1\n```\n", ".")
+	css := files["OEBPS/style.css"]
+	// Chroma token colors get -webkit-text-fill-color so Apple Books can't strip
+	// them (it overrides `color` but not text-fill-color).
+	if !strings.Contains(css, "-webkit-text-fill-color") {
+		t.Errorf("code token colors not forced for Apple Books: %q", css)
+	}
+	// ...but only on token color, never on background-color.
+	if regexpMatch(`background-color:\s*#[0-9a-fA-F]+;-webkit-text-fill-color`, css) {
+		t.Errorf("text-fill-color wrongly applied to a background: %q", css)
+	}
+}
+
+func regexpMatch(pattern, s string) bool {
+	return regexp.MustCompile(pattern).MatchString(s)
+}
+
 func TestLocalImagePackaged(t *testing.T) {
 	dir := t.TempDir()
 	// A tiny valid PNG isn't needed — packaging only reads and copies bytes.
@@ -167,24 +251,35 @@ func TestMermaidRasterizedToImage(t *testing.T) {
 	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
 		t.Fatalf("EnableDiagrams: %v", err)
 	}
-	fakePNG := []byte("\x89PNG-fake-bytes")
-	MermaidRasterizer = func([]byte) ([]byte, error) { return fakePNG, nil }
+	// Distinct bytes per theme so we can tell the variants apart.
+	MermaidRasterizer = func(_ []byte, theme string) ([]byte, error) {
+		return []byte("PNG-" + theme), nil
+	}
 	t.Cleanup(func() { MermaidRasterizer = nil })
 
 	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
 
-	if files["OEBPS/images/dgm1.png"] != string(fakePNG) {
-		t.Errorf("mermaid diagram not packaged as PNG: %q", files["OEBPS/images/dgm1.png"])
+	if files["OEBPS/images/dgm1.png"] != "PNG-" {
+		t.Errorf("light mermaid variant not packaged: %q", files["OEBPS/images/dgm1.png"])
+	}
+	if files["OEBPS/images/dgm1-dark.png"] != "PNG-dark" {
+		t.Errorf("dark mermaid variant not packaged: %q", files["OEBPS/images/dgm1-dark.png"])
 	}
 	chapter := files["OEBPS/content.xhtml"]
-	if !strings.Contains(chapter, `src="images/dgm1.png"`) {
-		t.Errorf("mermaid <pre> not replaced by <img>: %q", chapter)
+	// A <picture> switches variants on the reader's color scheme.
+	if !strings.Contains(chapter, `<source srcset="images/dgm1-dark.png" type="image/png" media="(prefers-color-scheme: dark)"/>`) {
+		t.Errorf("dark <source> missing: %q", chapter)
+	}
+	if !strings.Contains(chapter, `<img src="images/dgm1.png"`) {
+		t.Errorf("light <img> fallback missing: %q", chapter)
 	}
 	if strings.Contains(chapter, `class="mermaid"`) {
 		t.Errorf("mermaid source left in chapter after rasterizing: %q", chapter)
 	}
-	if !strings.Contains(files["OEBPS/content.opf"], `href="images/dgm1.png" media-type="image/png"`) {
-		t.Errorf("mermaid image not declared in manifest: %q", files["OEBPS/content.opf"])
+	for _, href := range []string{"images/dgm1.png", "images/dgm1-dark.png"} {
+		if !strings.Contains(files["OEBPS/content.opf"], `href="`+href+`" media-type="image/png"`) {
+			t.Errorf("mermaid image %s not declared in manifest: %q", href, files["OEBPS/content.opf"])
+		}
 	}
 }
 
@@ -192,7 +287,7 @@ func TestMermaidLeftAsSourceWhenRasterizerFails(t *testing.T) {
 	if err := html.EnableDiagrams([]string{"mermaid"}); err != nil {
 		t.Fatalf("EnableDiagrams: %v", err)
 	}
-	MermaidRasterizer = func([]byte) ([]byte, error) { return nil, errors.New("no browser") }
+	MermaidRasterizer = func([]byte, string) ([]byte, error) { return nil, errors.New("no browser") }
 	t.Cleanup(func() { MermaidRasterizer = nil })
 
 	_, files := readEPUB(t, "```mermaid\ngraph TD\n  A --> B\n```\n", ".")
