@@ -17,14 +17,18 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 
+	"github.com/rapatao/md2/internal/converter/epub"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
-// Install the diagram rasterizer into the html package, which the -flatten
-// path uses. html cannot import chrome (chrome imports html), so the hook is
-// wired here instead.
+// Install the browser-backed hooks into the packages that need them. Those
+// packages cannot import chrome (chrome imports them), so the hooks are wired
+// here instead: the html -flatten diagram rasterizer, and the epub mermaid
+// renderer (an ebook reader has no JS runtime, so mermaid is pre-rendered to
+// inline SVG).
 func init() {
 	htmlconv.Rasterizer = Rasterize
+	epub.MermaidRenderer = RenderMermaidSVG
 }
 
 // mermaidTimeout bounds how long we wait for client-side mermaid rendering to
@@ -197,6 +201,38 @@ func Rasterize(doc []byte) (out []byte, err error) {
 		return nil
 	})
 	return out, err
+}
+
+// RenderMermaidSVG renders a single mermaid diagram's source to standalone SVG
+// markup, for the EPUB converter (installed as epub.MermaidRenderer). It loads
+// the diagram in a headless browser, lets the mermaid script draw it, and reads
+// back the rendered <svg> element's markup for inlining — vector content the way
+// d2/plantuml are, which ebook readers do not dim in dark mode the way they do a
+// raster <img>. Any error (including no browser available) is returned so the
+// caller can fall back to leaving the diagram source in place.
+func RenderMermaidSVG(source []byte, theme string) ([]byte, error) {
+	doc := htmlconv.MermaidStandalonePage(source, theme)
+	var svg []byte
+	err := withPage(func(page *rod.Page) error {
+		if err := page.SetDocumentContent(string(doc)); err != nil {
+			return fmt.Errorf("set page content: %w", err)
+		}
+		if err := page.WaitLoad(); err != nil {
+			return fmt.Errorf("wait for page load: %w", err)
+		}
+		waitMermaid(page)
+		el, err := page.Element("pre.mermaid svg")
+		if err != nil {
+			return fmt.Errorf("find diagram: %w", err)
+		}
+		markup, err := el.HTML()
+		if err != nil {
+			return fmt.Errorf("read diagram svg: %w", err)
+		}
+		svg = []byte(markup)
+		return nil
+	})
+	return svg, err
 }
 
 // diagramScale renders diagram snapshots at this device-pixel ratio so the PNGs

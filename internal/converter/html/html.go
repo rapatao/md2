@@ -39,6 +39,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
+	ghtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
@@ -129,6 +130,55 @@ var KeepDiagramSource bool
 // has no HTML/CSS layer. Set from the -css CLI flag.
 var ExtraCSS string
 
+// Title and Author are document metadata shared across output formats, set from
+// the -title and -author CLI flags. They live here because html is the renderer
+// every format depends on: the HTML <title>/<meta author>, the browser-rendered
+// PDF's title, the pure-Go PDF's info dictionary, and the EPUB's dc:title/creator
+// all derive from them. An empty Title falls back to the document's first heading
+// (see DocumentTitle); an empty Author omits author metadata.
+var (
+	Title  string
+	Author string
+)
+
+// FirstHeading returns the plain text of the document's first heading, or "" if
+// there is none.
+func FirstHeading(src []byte) string {
+	doc := goldmark.New(goldmark.WithExtensions(extension.GFM)).
+		Parser().Parse(text.NewReader(src))
+	title := ""
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		h, ok := n.(*ast.Heading)
+		if !entering || !ok {
+			return ast.WalkContinue, nil
+		}
+		var b strings.Builder
+		_ = ast.Walk(h, func(c ast.Node, e bool) (ast.WalkStatus, error) {
+			if e {
+				switch t := c.(type) {
+				case *ast.Text:
+					b.Write(t.Segment.Value(src))
+				case *ast.String:
+					b.Write(t.Value)
+				}
+			}
+			return ast.WalkContinue, nil
+		})
+		title = b.String()
+		return ast.WalkStop, nil
+	})
+	return title
+}
+
+// DocumentTitle returns Title, or the document's first heading when Title is
+// unset (may be ""). Shared by every output format's title metadata.
+func DocumentTitle(src []byte) string {
+	if Title != "" {
+		return Title
+	}
+	return FirstHeading(src)
+}
+
 // highlightStyle is the chroma theme used to color fenced code blocks. "github"
 // is light, so it blends with the light HTML document. The pure-Go PDF path
 // (internal/converter/pdf) uses the same style for consistent output.
@@ -192,36 +242,32 @@ func Render(src []byte) ([]byte, error) {
 // diagrams, the mermaid library and an init script are inlined so the diagrams
 // render without any network access.
 func RenderFrom(src []byte, baseDir string) ([]byte, error) {
-	dr := &diagramRenderer{}
-	md := goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
-		// Generate GitHub-style id attributes on headings so in-document links
-		// like [x](#my-section) resolve to the heading.
-		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-		goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
-		),
-	)
-
-	doc := md.Parser().Parse(text.NewReader(src))
-	hasMermaid := containsEnabledDiagram(doc, src, "mermaid")
-
-	var body bytes.Buffer
-	if err := md.Renderer().Render(&body, src, doc); err != nil {
+	body, css, hasMermaid, err := renderBody(src, false, false)
+	if err != nil {
 		return nil, err
 	}
 
 	// Embed local images into the body before the mermaid library is appended,
 	// so the scan never touches that script (which contains <img>-like strings).
-	bodyBytes := inlineLocalImages(body.Bytes(), baseDir)
+	bodyBytes := inlineLocalImages(body, baseDir)
 
 	var out bytes.Buffer
 	out.WriteString(docHeadOpen)
+	if t := DocumentTitle(src); t != "" {
+		out.WriteString("<title>")
+		htmlEscaper.WriteString(&out, t)
+		out.WriteString("</title>\n")
+	}
+	if Author != "" {
+		out.WriteString(`<meta name="author" content="`)
+		htmlEscaper.WriteString(&out, Author)
+		out.WriteString("\">\n")
+	}
 	// Inject the chroma stylesheet only when a block was actually highlighted,
 	// before any ExtraCSS so -css can override highlight colors via the cascade.
-	if dr.highlighted {
+	if css != "" {
 		out.WriteString("<style>\n")
-		_ = highlightFormatter.WriteCSS(&out, highlightStyle)
+		out.WriteString(css)
 		out.WriteString("</style>\n")
 	}
 	if ExtraCSS != "" {
@@ -240,6 +286,72 @@ func RenderFrom(src []byte, baseDir string) ([]byte, error) {
 	}
 	out.WriteString(docTail)
 	return out.Bytes(), nil
+}
+
+// renderBody parses src and renders just the document body (no <html>/<head>
+// wrapper). It returns the body markup, the chroma stylesheet for any
+// syntax-highlighted code (empty when nothing was highlighted), and whether the
+// body contains an enabled mermaid diagram. xhtml selects well-formed XHTML
+// output — void elements like <img> and <hr> are self-closed — which the EPUB
+// converter needs; the HTML path leaves it off. Images are left as their
+// original references; callers embed them (inline data URIs for HTML, packaged
+// archive entries for EPUB).
+func renderBody(src []byte, xhtml, asSource bool) ([]byte, string, bool, error) {
+	dr := &diagramRenderer{asSource: asSource}
+	rendererOpts := []renderer.Option{
+		renderer.WithNodeRenderers(util.Prioritized(dr, 10)),
+	}
+	if xhtml {
+		rendererOpts = append(rendererOpts, ghtml.WithXHTML())
+	}
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		// Generate GitHub-style id attributes on headings so in-document links
+		// like [x](#my-section) resolve to the heading.
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+		goldmark.WithRendererOptions(rendererOpts...),
+	)
+
+	doc := md.Parser().Parse(text.NewReader(src))
+	hasMermaid := containsEnabledDiagram(doc, src, "mermaid")
+
+	var body bytes.Buffer
+	if err := md.Renderer().Render(&body, src, doc); err != nil {
+		return nil, "", false, err
+	}
+
+	var css string
+	if dr.highlighted {
+		var s bytes.Buffer
+		_ = highlightFormatter.WriteCSS(&s, highlightStyle)
+		css = s.String()
+	}
+	return body.Bytes(), css, hasMermaid, nil
+}
+
+// ChromaCSS returns the syntax-highlight stylesheet for the named chroma style
+// (e.g. "github-dark"), for callers that need a variant beyond the default the
+// document uses — the EPUB converter uses it for a prefers-color-scheme:dark
+// block. Token class names are the same across styles, so a dark variant scoped
+// in a dark media query cleanly overrides the light one.
+func ChromaCSS(style string) string {
+	var b bytes.Buffer
+	_ = highlightFormatter.WriteCSS(&b, styles.Get(style))
+	return b.String()
+}
+
+// XHTMLBody renders markdown to a well-formed XHTML body fragment plus the
+// chroma stylesheet for any highlighted code, for the EPUB converter. Unlike
+// RenderFrom it does not wrap the result in a full document and does not inline
+// images — the caller packages them into the archive. Enabled diagrams are left
+// as <pre class="lang">source</pre> (asSource mode) rather than rendered, so the
+// EPUB converter can render a light and a dark variant of each and toggle them
+// by the reader's color scheme.
+func XHTMLBody(src []byte) ([]byte, string, error) {
+	// asSource: leave enabled diagrams as <pre class="lang">source</pre> so the
+	// EPUB converter renders its own light and dark variants of each.
+	body, css, _, err := renderBody(src, true, true)
+	return body, css, err
 }
 
 // imgSrcRe matches the src attribute of an <img> tag, capturing the URL.
@@ -405,6 +517,10 @@ type diagramRenderer struct {
 	// highlighted records whether any code block was syntax-highlighted, so
 	// RenderFrom knows to inline the chroma stylesheet.
 	highlighted bool
+	// asSource, when set, emits an enabled diagram as <pre class="lang">source</pre>
+	// instead of rendering it, so a caller (the EPUB converter) can render its own
+	// light and dark variants. Syntax highlighting still applies to normal code.
+	asSource bool
 }
 
 func (r *diagramRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
@@ -417,6 +533,20 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 	}
 	n := node.(*ast.FencedCodeBlock)
 
+	// In asSource mode, hand an enabled diagram's raw source to the caller as
+	// <pre class="lang">source</pre> (mermaid already uses this shape) instead of
+	// rendering it, so the EPUB converter can produce light and dark variants.
+	if r.asSource {
+		if lang := enabledDiagramLang(n, source); lang != "" {
+			w.WriteString(`<pre class="`)
+			w.WriteString(lang)
+			w.WriteString(`">`)
+			writeLines(w, source, n)
+			w.WriteString("</pre>\n")
+			return ast.WalkSkipChildren, nil
+		}
+	}
+
 	switch enabledDiagramLang(n, source) {
 	case "mermaid":
 		w.WriteString(`<pre class="mermaid">`)
@@ -428,7 +558,7 @@ func (r *diagramRenderer) renderFencedCodeBlock(w util.BufWriter, source []byte,
 			return ast.WalkSkipChildren, nil
 		}
 	case "d2":
-		if svg, err := renderD2(rawLines(source, n)); err != nil {
+		if svg, err := renderD2(rawLines(source, n), 0); err != nil {
 			// A broken diagram must not fail the whole conversion: warn and
 			// fall through to render the block as plain code.
 			fmt.Fprintf(os.Stderr, "md2: d2 render failed: %v\n", err)
@@ -550,12 +680,11 @@ window.__md2Mermaid=mermaid.run()
 </script>
 `
 
-const docHeadOpen = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<style>
-body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;margin:2rem;padding:0 1rem;color:#1a1a1a}
+// BaseCSS is md2's built-in stylesheet (readable body, bordered tables, code
+// blocks). It is embedded in the HTML document head and also reused by the EPUB
+// converter, which writes it to a packaged stylesheet so ebooks share the same
+// base look.
+const BaseCSS = `body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;margin:2rem;padding:0 1rem;color:#1a1a1a}
 h1,h2,h3,h4{line-height:1.25}
 table{border-collapse:collapse;width:100%;margin:1rem 0}
 th,td{border:1px solid #ccc;padding:.4rem .6rem;text-align:left;vertical-align:top}
@@ -565,9 +694,58 @@ pre{background:#f4f4f4;padding:1rem;border-radius:6px;overflow:auto}
 pre code{background:none;padding:0}
 pre.mermaid{background:none;padding:0;text-align:center}
 blockquote{border-left:4px solid #ddd;margin:0;padding:.2rem 1rem;color:#555}
-img{max-width:100%}
+img{max-width:100%}`
+
+const docHeadOpen = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+` + BaseCSS + `
 </style>
 `
+
+// MermaidStandalonePage returns a minimal HTML document rendering a single
+// mermaid diagram client-side, for the EPUB converter to load in a headless
+// browser and extract the rendered SVG (an ebook reader has no JS runtime, so
+// mermaid is pre-rendered). htmlLabels:false makes mermaid emit SVG <text>
+// labels rather than <foreignObject> HTML, so the extracted SVG is well-formed
+// XML that inlines into the XHTML chapter. The init script signals completion
+// via window.__md2MermaidDone, which the caller waits on — the same contract as
+// the inlined HTML/PDF path.
+func MermaidStandalonePage(source []byte, theme string) []byte {
+	// SVG text labels (htmlLabels:false) rather than <foreignObject> HTML, both
+	// for well-formed XHTML and because EPUB readers support SVG text far more
+	// reliably than foreignObject. For the dark variant use the "base" theme with
+	// an explicit dark palette — mermaid's built-in "dark" theme renders too dark
+	// on a near-black page and mis-colors SVG-text labels.
+	themeOpt := ""
+	if theme == "dark" {
+		themeOpt = ",theme:'base',themeVariables:{darkMode:true,background:'#0d1117'," +
+			"primaryColor:'#21262d',primaryTextColor:'#e6edf3',primaryBorderColor:'#8b949e'," +
+			"secondaryColor:'#161b22',tertiaryColor:'#161b22',lineColor:'#8b949e'," +
+			"textColor:'#e6edf3',mainBkg:'#21262d',nodeBorder:'#8b949e'}"
+	}
+	init := "mermaid.initialize({startOnLoad:false,htmlLabels:false," +
+		"flowchart:{htmlLabels:false}" + themeOpt + "});\n" +
+		"window.__md2Mermaid=mermaid.run()" +
+		".then(function(){window.__md2MermaidDone=true;})" +
+		".catch(function(e){window.__md2MermaidErr=String(e);window.__md2MermaidDone=true;});"
+
+	var b bytes.Buffer
+	b.WriteString(`<!DOCTYPE html><html><head><meta charset="utf-8">` +
+		`<style>pre.mermaid{background:none;padding:0}</style></head><body>` +
+		`<pre class="mermaid">`)
+	htmlEscaper.WriteString(&b, string(source))
+	b.WriteString("</pre>\n<script>")
+	// </script> can only appear inside a JS string literal in the minified lib;
+	// neutralise it so it cannot close the surrounding <script> element.
+	b.WriteString(strings.ReplaceAll(mermaidJS, "</script>", `<\/script>`))
+	b.WriteString("</script>\n<script>")
+	b.WriteString(init)
+	b.WriteString("</script></body></html>")
+	return b.Bytes()
+}
 
 const docHeadClose = `</head>
 <body>

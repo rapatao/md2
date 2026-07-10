@@ -79,6 +79,42 @@ func TestRenderNoExtraCSSByDefault(t *testing.T) {
 	}
 }
 
+func TestRenderTitleFromFirstHeading(t *testing.T) {
+	out, err := Render([]byte("# My Page\n\nbody\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(string(out), "<title>My Page</title>") {
+		t.Errorf("title not derived from first heading:\n%s", out)
+	}
+}
+
+func TestRenderTitleAndAuthorOverride(t *testing.T) {
+	Title, Author = "Custom", "Jane Doe"
+	t.Cleanup(func() { Title, Author = "", "" })
+	out, err := Render([]byte("# Ignored\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "<title>Custom</title>") {
+		t.Errorf("-title did not override heading:\n%s", s)
+	}
+	if !strings.Contains(s, `<meta name="author" content="Jane Doe">`) {
+		t.Errorf("author meta missing:\n%s", s)
+	}
+}
+
+func TestRenderNoTitleWhenNoHeading(t *testing.T) {
+	out, err := Render([]byte("just a paragraph\n"))
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if bytes.Contains(out, []byte("<title>")) {
+		t.Errorf("should omit <title> with no heading/title set:\n%s", out)
+	}
+}
+
 func TestRenderExtraCSS(t *testing.T) {
 	setExtraCSS(t, "body{background:#eef}")
 	out, err := Render([]byte("# Title\n"))

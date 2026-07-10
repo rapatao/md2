@@ -15,11 +15,24 @@ import (
 	"oss.terrastruct.com/util-go/go2"
 )
 
+// RenderD2 compiles a d2 diagram's source into a standalone SVG element. dark
+// selects d2's "Dark Mauve" theme (for a dark-mode variant); otherwise the
+// neutral default. Exposed for the EPUB converter, which renders a light and a
+// dark variant of each diagram.
+func RenderD2(src []byte, dark bool) ([]byte, error) {
+	var themeID int64 // 0 = Neutral Default
+	if dark {
+		themeID = 200 // Dark Mauve
+	}
+	return renderD2(src, themeID)
+}
+
 // renderD2 compiles a d2 diagram's source into a standalone SVG element,
 // rendered entirely in-process (no external binary, no browser). The SVG is
 // emitted without an <?xml?> prolog so it can be inlined directly into an HTML
 // body. Layout uses the pure-Go dagre engine, keeping the build CGO-free.
-func renderD2(src []byte) ([]byte, error) {
+// themeID selects a d2 theme (0 = neutral default).
+func renderD2(src []byte, themeID int64) ([]byte, error) {
 	ruler, err := textmeasure.NewRuler()
 	if err != nil {
 		return nil, fmt.Errorf("d2 text ruler: %w", err)
@@ -32,6 +45,7 @@ func renderD2(src []byte) ([]byte, error) {
 	renderOpts := &d2svg.RenderOpts{
 		Pad:      go2.Pointer(int64(5)),
 		NoXMLTag: go2.Pointer(true),
+		ThemeID:  go2.Pointer(themeID),
 	}
 
 	// d2 logs internal debug/warn chatter through a context-carried slog.Logger
