@@ -91,6 +91,13 @@ func EnableDiagrams(names []string) error {
 	return nil
 }
 
+// DiagramEnabled reports whether lang is a diagram renderer the user turned on
+// via -render. Non-HTML converters (docx) that walk the AST directly use it to
+// decide whether a fenced code block should be rendered as a diagram.
+func DiagramEnabled(lang string) bool {
+	return enabledDiagrams[lang]
+}
+
 // enabledDiagramLang returns the diagram language of a fenced code block when
 // md2 can render it and the user enabled it; otherwise "".
 func enabledDiagramLang(n *ast.FencedCodeBlock, src []byte) string {

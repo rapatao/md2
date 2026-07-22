@@ -17,6 +17,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 
+	"github.com/rapatao/md2/internal/converter/docx"
 	"github.com/rapatao/md2/internal/converter/epub"
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
@@ -29,6 +30,7 @@ import (
 func init() {
 	htmlconv.Rasterizer = Rasterize
 	epub.MermaidRenderer = RenderMermaidSVG
+	docx.DiagramRasterizer = RenderDiagramPNG
 }
 
 // mermaidTimeout bounds how long we wait for client-side mermaid rendering to
@@ -233,6 +235,69 @@ func RenderMermaidSVG(source []byte, theme string) ([]byte, error) {
 		return nil
 	})
 	return svg, err
+}
+
+// RenderDiagramPNG renders a diagram's fenced source to a PNG for the DOCX
+// converter (installed as docx.DiagramRasterizer). d2/plantuml compile to SVG
+// in-process (via the html package); mermaid draws client-side in the browser.
+// Either way the diagram is loaded on a white page and the rendered vector is
+// snapshotted to a raster PNG — the portable form every Word/Office viewer shows
+// (unlike SVG, which needs a fallback). Any error (including no browser) is
+// returned so the caller falls back to leaving the diagram as a code block.
+func RenderDiagramPNG(source []byte, kind string) (png []byte, err error) {
+	var doc []byte
+	selector := "svg"
+	waitForMermaid := false
+	switch kind {
+	case "mermaid":
+		doc = htmlconv.MermaidStandalonePage(source, "")
+		selector, waitForMermaid = "pre.mermaid", true
+	case "d2":
+		svg, e := htmlconv.RenderD2(source, false)
+		if e != nil {
+			return nil, e
+		}
+		doc = diagramPage(svg)
+	case "plantuml":
+		svg, e := htmlconv.RenderPlantUML(source, false)
+		if e != nil {
+			return nil, e
+		}
+		doc = diagramPage(svg)
+	default:
+		return nil, fmt.Errorf("unknown diagram %q", kind)
+	}
+
+	err = withPage(func(page *rod.Page) error {
+		if err := page.SetDocumentContent(string(doc)); err != nil {
+			return fmt.Errorf("set page content: %w", err)
+		}
+		if err := page.WaitLoad(); err != nil {
+			return fmt.Errorf("wait for page load: %w", err)
+		}
+		if waitForMermaid {
+			waitMermaid(page)
+		}
+		// Opaque white backdrop so the snapshot is legible on the document page.
+		if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
+			return fmt.Errorf("set background: %w", err)
+		}
+		el, err := page.Element(selector)
+		if err != nil {
+			return fmt.Errorf("find diagram: %w", err)
+		}
+		png, err = snapshotDiagram(page, el)
+		return err
+	})
+	return png, err
+}
+
+// diagramPage wraps standalone SVG markup (d2/plantuml) in a minimal white HTML
+// page for the browser to load and snapshot.
+func diagramPage(svg []byte) []byte {
+	return []byte(`<!DOCTYPE html><html><head><meta charset="utf-8">` +
+		`<style>body{margin:0;background:#fff}svg{display:block}</style></head><body>` +
+		string(svg) + `</body></html>`)
 }
 
 // diagramScale renders diagram snapshots at this device-pixel ratio so the PNGs

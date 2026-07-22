@@ -398,7 +398,7 @@ func TestRunErrors(t *testing.T) {
 	}{
 		{"output conflicts with multiple formats", []string{"-o", "x.pdf", "-f", "pdf,html", in}},
 		{"stdout conflicts with multiple formats", []string{"-stdout", "-f", "pdf,html", in}},
-		{"unsupported format", []string{"-f", "docx", in}},
+		{"unsupported format", []string{"-f", "xyz", in}},
 		{"no input", []string{}},
 		{"missing input file", []string{filepath.Join(t.TempDir(), "nope.md")}},
 		{"merge multiple inputs without -o", []string{"-f", "html", in, writeInput(t)}},

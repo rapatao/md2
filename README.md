@@ -106,6 +106,7 @@ md2 input.md                  # writes input.pdf (default format)
 md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
 md2 -f epub input.md          # writes input.epub (EPUB3 ebook)
+md2 -f docx input.md          # writes input.docx (Word document)
 md2 -f epub -author "Jane Doe" -title "My Manual" input.md  # set title/author metadata (any format)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
 md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
@@ -305,6 +306,8 @@ with no `.md` files is an error. The input must be *either* a single directory
 | `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
 | `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, static PNGs via go-rod) or in-process D2 inline SVG |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
+| `epub` | `.epub`   | stdlib `archive/zip` EPUB3 container (pure Go); chapter shares the HTML pipeline; per-heading nested TOC; local images packaged; light/dark diagram variants |
+| `docx` | `.docx`   | stdlib `archive/zip` OOXML package (pure Go); goldmark AST → WordprocessingML; named heading styles (Navigation pane), native list numbering, tables, syntax-highlighted code in a bordered box (chroma `github` colors as run colors), local images embedded; enabled diagrams (`-render`) rasterized to embedded PNGs via headless browser |
 
 ## Adding a format
 
@@ -312,8 +315,8 @@ Each format lives in its own package under `internal/converter/`. Create a new
 one that implements `converter.Converter` and registers itself in an `init`:
 
 ```go
-// internal/converter/docx/docx.go
-package docx
+// internal/converter/rtf/rtf.go
+package rtf
 
 import "github.com/rapatao/md2/internal/converter"
 
@@ -321,17 +324,18 @@ type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error { /* ... */ }
 
-func init() { converter.Register("docx", Converter{}) }
+func init() { converter.Register("rtf", Converter{}) }
 ```
 
-Then blank-import the package in `main.go` so its `init` runs:
+Then blank-import the package in `internal/cli/cli.go` so its `init` runs:
 
 ```go
-_ "github.com/rapatao/md2/internal/converter/docx"
+_ "github.com/rapatao/md2/internal/converter/rtf"
 ```
 
 The CLI picks it up automatically — no other changes. It then works standalone
-(`-f docx`) and in any comma list (`-f pdf,docx`).
+(`-f rtf`) and in any comma list (`-f pdf,rtf`). See `internal/converter/docx`
+for a worked example that hand-builds an OOXML zip with the standard library.
 
 ## Layout
 
@@ -348,6 +352,8 @@ internal/converter/
   html/plantuml.go            PlantUML diagrams -> inline SVG (via PlantUML server)
   html/assets/                bundled mermaid.min.js inlined into HTML output
   text/text.go                markdown -> plain text (AST walker)
+  epub/epub.go                markdown -> EPUB3 ebook (stdlib archive/zip)
+  docx/docx.go                markdown -> Word .docx (OOXML, stdlib archive/zip)
   chrome/chrome.go            HTML -> PDF / diagram capture via headless browser (go-rod)
 internal/css/                 -css load, @import inlining, append to stylesheet
 internal/merge/               concatenate multiple input files into one document
