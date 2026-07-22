@@ -26,6 +26,12 @@ nix run github:rapatao/md2 -- input.md     # run without installing
 nix profile install github:rapatao/md2     # install into your profile
 ```
 
+**Arch Linux** (AUR):
+
+```sh
+yay -S md2-bin      # or: paru -S md2-bin
+```
+
 **Prebuilt binaries**: download the archive for your OS/arch from the
 [latest release](https://github.com/rapatao/md2/releases/latest). Each release
 is signed (keyless, via [cosign](https://github.com/sigstore/cosign)) — see
