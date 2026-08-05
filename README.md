@@ -10,6 +10,7 @@ Currently supported:
 - **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
 - **EPUB** (`.epub`) — EPUB3 ebook (validates with epubcheck). Shares the HTML renderer, so syntax-highlighted code carries over, and the stylesheet has a `prefers-color-scheme: dark` variant for readers' dark mode. Diagrams (Mermaid, D2, PlantUML) are inlined as SVG in a **light and a dark theme**, toggled by the reader's color scheme, so they stay legible in both (Mermaid needs a browser at convert time, like the PDF diagram path). A navigation TOC is built from the document's headings; `dc:title`/`dc:creator` come from `-title`/`-author`. Local images are packaged into the archive
+- **DOCX** (`.docx`) — Word document, hand-built Office Open XML (pure Go, no new dependency). Named heading styles drive Word's Navigation pane / auto-TOC; native list numbering; GFM tables, blockquotes, thematic breaks; bold/italic/inline-code and hyperlinks; local images embedded as sized inline drawings; syntax-highlighted code as a bordered, shaded paragraph (chroma github theme). Diagrams (`-render`) are rasterized to embedded PNGs via a headless browser, falling back to a code block without one. Title/author metadata comes from `-title`/`-author`
 
 ## Install
 
