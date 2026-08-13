@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"time"
 
@@ -304,11 +305,23 @@ func diagramPage(svg []byte) []byte {
 // stay crisp when displayed in the document.
 const diagramScale = 2
 
-// snapshotDiagram captures a single rendered mermaid diagram as a PNG. It
-// measures the diagram's box and captures exactly that region with an explicit
-// clip and CaptureBeyondViewport set, so a diagram larger than the viewport is
-// captured in full — rod's Element.Screenshot grabs only the viewport and then
-// crops, which clips anything off-screen and mishandles a non-unit scale.
+// maxDiagramViewport bounds the viewport the diagram is laid out in, in CSS
+// pixels. A diagram larger than this is scaled down to fit rather than eating
+// diagramScale² bytes per pixel of browser surface.
+const maxDiagramViewport = 4096
+
+// snapshotDiagram captures a single rendered diagram as a PNG.
+//
+// The viewport is first resized to the diagram's natural size (from its
+// viewBox): mermaid emits width:100% SVGs, so in a window-sized viewport a
+// large diagram is squeezed to the window width — snapshotted blurry, and, when
+// the clip then reaches past the viewport, cut off on the right and bottom by
+// browsers that do not honour CaptureBeyondViewport. Laying it out at its own
+// size keeps the whole diagram on screen and crisp.
+//
+// The capture itself uses an explicit clip (rod's Element.Screenshot grabs only
+// the viewport and then crops) with CaptureBeyondViewport still set, which
+// covers a diagram too big for maxDiagramViewport.
 func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
 	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
@@ -318,6 +331,28 @@ func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 		target = svg
 	}
 
+	nat, err := target.Eval(`() => {
+		const vb = this.viewBox && this.viewBox.baseVal;
+		const r = this.getBoundingClientRect();
+		const w = (vb && vb.width) ? vb.width : r.width;
+		const h = (vb && vb.height) ? vb.height : r.height;
+		// Leave room for whatever the page puts around the diagram (body margins,
+		// padding), so the resized viewport really does give it its natural width.
+		const gutter = Math.max(0, window.innerWidth - r.width);
+		return {w: w + gutter, h: h + gutter};
+	}`)
+	if err != nil {
+		return nil, fmt.Errorf("measure diagram: %w", err)
+	}
+	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width:             viewportDim(nat.Value.Get("w").Num()),
+		Height:            viewportDim(nat.Value.Get("h").Num()),
+		DeviceScaleFactor: diagramScale,
+	}); err != nil {
+		return nil, fmt.Errorf("size viewport to diagram: %w", err)
+	}
+
+	// Re-measure: the resize reflows the page, moving and growing the diagram.
 	res, err := target.Eval(`() => {
 		const r = this.getBoundingClientRect();
 		return {x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height};
@@ -335,13 +370,28 @@ func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 			Y:      box.Get("y").Num(),
 			Width:  box.Get("w").Num(),
 			Height: box.Get("h").Num(),
-			Scale:  diagramScale,
+			// The device scale factor already renders at diagramScale.
+			Scale: 1,
 		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("capture diagram: %w", err)
 	}
 	return png, nil
+}
+
+// viewportDim rounds a measured diagram dimension up to a usable viewport
+// extent: at least 1 pixel (a zero dimension means "no override" to Chrome) and
+// at most maxDiagramViewport.
+func viewportDim(v float64) int {
+	d := int(math.Ceil(v))
+	if d < 1 {
+		return 1
+	}
+	if d > maxDiagramViewport {
+		return maxDiagramViewport
+	}
+	return d
 }
 
 // browserGetter downloads a browser on demand, returning its path.
