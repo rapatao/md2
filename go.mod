@@ -7,8 +7,8 @@ require (
 	github.com/go-rod/rod v0.116.2
 	github.com/stephenafamo/goldmark-pdf v0.4.2
 	github.com/yuin/goldmark v1.8.5
-	oss.terrastruct.com/d2 v0.7.1
-	oss.terrastruct.com/util-go v0.0.0-20250213174338-243d8661088a
+	oss.terrastruct.com/d2 v0.7.2
+	oss.terrastruct.com/util-go v0.1.0
 )
 
 require (
