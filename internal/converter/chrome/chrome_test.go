@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/go-rod/rod/lib/launcher"
+
+	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
 // fakeBrowser records whether Get was called and returns a canned result.
@@ -134,5 +136,38 @@ func TestRenderDiagramPNGKeepsWideDiagramWhole(t *testing.T) {
 	// across (and a few px tall) at diagramScale.
 	if want := maxDiagramViewport; cfg.Width < want {
 		t.Errorf("snapshot is %dx%d, want at least %d px wide", cfg.Width, cfg.Height, want)
+	}
+}
+
+// -flatten must leave the drawn diagram in the document as vector SVG, with the
+// mermaid library dropped — the PDF path's mechanism, nothing snapshotted.
+func TestFlattenDiagramsKeepsRenderedSVG(t *testing.T) {
+	if _, has := launcher.LookPath(); !has {
+		t.Skip("no browser installed")
+	}
+
+	if err := htmlconv.EnableDiagrams([]string{"mermaid"}); err != nil {
+		t.Fatalf("enable mermaid: %v", err)
+	}
+	defer func() { _ = htmlconv.EnableDiagrams(nil) }()
+
+	doc, err := htmlconv.Render([]byte("# Doc\n\n```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```\n"))
+	if err != nil {
+		t.Fatalf("render html: %v", err)
+	}
+	out, err := FlattenDiagrams(doc)
+	if err != nil {
+		t.Fatalf("flatten: %v", err)
+	}
+
+	got := string(out)
+	if !strings.Contains(got, "<svg") {
+		t.Error("flattened document has no rendered <svg>")
+	}
+	if strings.Contains(got, "<script") {
+		t.Error("flattened document still carries a <script> (mermaid library not dropped)")
+	}
+	if strings.Contains(got, "data:image/png") {
+		t.Error("flattened document rasterized a diagram; it should keep the SVG")
 	}
 }

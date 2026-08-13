@@ -7,7 +7,7 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 Currently supported:
 
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
-- **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as pre-drawn inline SVG with `-flatten`, no JS runtime needed), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
 - **EPUB** (`.epub`) — EPUB3 ebook (validates with epubcheck). Shares the HTML renderer, so syntax-highlighted code carries over, and the stylesheet has a `prefers-color-scheme: dark` variant for readers' dark mode. Diagrams (Mermaid, D2, PlantUML) are inlined as SVG in a **light and a dark theme**, toggled by the reader's color scheme, so they stay legible in both (Mermaid needs a browser at convert time, like the PDF diagram path). A navigation TOC is built from the document's headings; `dc:title`/`dc:creator` come from `-title`/`-author`. Local images are packaged into the archive
 - **DOCX** (`.docx`) — Word document, hand-built Office Open XML (pure Go, no new dependency). Named heading styles drive Word's Navigation pane / auto-TOC; native list numbering; GFM tables, blockquotes, thematic breaks; bold/italic/inline-code and hyperlinks; local images embedded as sized inline drawings; syntax-highlighted code as a bordered, shaded paragraph (chroma github theme). Diagrams (`-render`) are rasterized to embedded PNGs via a headless browser, falling back to a code block without one. Title/author metadata comes from `-title`/`-author`
@@ -110,7 +110,7 @@ md2 -f epub input.md          # writes input.epub (EPUB3 ebook)
 md2 -f docx input.md          # writes input.docx (Word document)
 md2 -f epub -author "Jane Doe" -title "My Manual" input.md  # set title/author metadata (any format)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
-md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
+md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams pre-drawn as svg
 md2 -f html -render plantuml input.md          # render plantuml diagrams via a PlantUML server
 md2 -f html -css extra.css input.md  # append custom CSS after the built-in stylesheet
 md2 -o report.pdf input.md    # explicit output (format from extension)
@@ -133,7 +133,7 @@ Flags:
 - `-o` output file. Default: the input's name with the format extension. Cannot be combined with multiple formats. **Required when merging multiple inputs** (several files, or a directory) into one document.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
-- `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, **and** fetch remote `http(s)` images and embed them as data URIs, for a fully self-contained file with no JS runtime or external assets needed to view it (e.g. importing into Google Docs). Requires a browser for diagrams, and — new in this flag — **network access at convert time for any document that references remote images** (so a doc with remote images no longer converts in an airgapped/offline environment under `-flatten`). A remote image that can't be fetched is left as a live reference with a warning, not a hard failure.
+- `-flatten` (HTML only) draw diagrams once in a headless browser and keep the rendered inline SVG instead of inlining mermaid.js, **and** fetch remote `http(s)` images and embed them as data URIs, for a fully self-contained file with no JS runtime or external assets needed to view it (e.g. importing into Google Docs). Requires a browser for diagrams, and — new in this flag — **network access at convert time for any document that references remote images** (so a doc with remote images no longer converts in an airgapped/offline environment under `-flatten`). A remote image that can't be fetched is left as a live reference with a warning, not a hard failure.
 - `-user-agent` `User-Agent` header sent when `-flatten` fetches remote images to embed. Default: a browser-like string, since some hosts reject the default Go client UA. Override for hosts with specific requirements.
 - `-keep-diagram-source` keep the original diagram source in the output in addition to the rendered diagram: the rendered diagram is emitted first, immediately followed by the source as a code block. Default: off — a diagram replaces its source.
 - `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
@@ -201,7 +201,7 @@ Alice -> Bob: hello
 
 ```sh
 md2 -f html -render mermaid input.md            # enable mermaid (interactive)
-md2 -f html -render mermaid -flatten input.md   # diagrams as static images
+md2 -f html -render mermaid -flatten input.md   # diagrams pre-drawn as static svg
 md2 -f html -render d2      input.md            # enable D2 (inline SVG)
 md2 -f html -render plantuml input.md           # enable PlantUML (server-rendered SVG)
 md2 -f pdf  -render all     input.md            # enable every supported renderer
@@ -214,10 +214,12 @@ Three renderers are supported, with different rendering models:
   [mermaid](https://mermaid.js.org) library is inlined into the output (no
   network access needed to view it) and the block renders to SVG in the browser
   — interactive, but needing a JS runtime to display. With `-flatten`, md2
-  renders the document in a headless browser and replaces each diagram with a
-  static PNG image, producing a self-contained file that displays anywhere —
-  including a Google Docs import (upload the `.html` to Drive, then
-  "Open with > Google Docs"), which runs no JavaScript. `-flatten` also fetches
+  draws the document once in a headless browser and keeps each diagram as the
+  rendered inline SVG (the same mechanism the PDF path uses), dropping the
+  library: a static file that displays with no JavaScript, at any zoom. Note
+  that a Google Docs import (upload the `.html` to Drive, then "Open with >
+  Google Docs") does not render inline SVG — use `-f docx`, which embeds
+  diagrams as PNGs, for that route. `-flatten` also fetches
   any remote `http(s)` images and embeds them as data URIs (needing network
   access at convert time), so the output has no external asset dependencies at
   all. In **PDF**, a mermaid
@@ -305,7 +307,7 @@ with no `.md` files is an error. The input must be *either* a single directory
 | Format | Extension | Engine |
 |--------|-----------|--------|
 | `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
-| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, static PNGs via go-rod) or in-process D2 inline SVG |
+| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, pre-drawn inline SVG via go-rod) or in-process D2 inline SVG |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
 | `epub` | `.epub`   | stdlib `archive/zip` EPUB3 container (pure Go); chapter shares the HTML pipeline; per-heading nested TOC; local images packaged; light/dark diagram variants |
 | `docx` | `.docx`   | stdlib `archive/zip` OOXML package (pure Go); goldmark AST → WordprocessingML; named heading styles (Navigation pane), native list numbering, tables, syntax-highlighted code in a bordered box (chroma `github` colors as run colors), local images embedded; enabled diagrams (`-render`) rasterized to embedded PNGs via headless browser |

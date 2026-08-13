@@ -38,7 +38,7 @@ func newFlagSet(o *options) *flag.FlagSet {
 	fs.StringVar(&o.output, "o", "", "output file (default: input's name with new extension; required when merging multiple inputs)")
 	fs.StringVar(&o.format, "f", "", fmt.Sprintf("output format(s), comma-separated %v (default: from -o extension, else pdf)", converter.Formats()))
 	fs.StringVar(&o.render, "render", "", fmt.Sprintf("diagram renderer(s) to enable, comma-separated %v or \"all\" (default: none)", htmlconv.SupportedDiagrams()))
-	fs.BoolVar(&o.flatten, "flatten", false, "flatten HTML diagrams to static images instead of inlining mermaid.js, and embed remote http(s) images as data URIs (self-contained, e.g. for Google Docs; needs a browser, and network access for docs with remote images)")
+	fs.BoolVar(&o.flatten, "flatten", false, "flatten HTML diagrams to pre-drawn inline SVG instead of inlining mermaid.js, and embed remote http(s) images as data URIs (self-contained, no JS runtime needed; needs a browser, and network access for docs with remote images)")
 	fs.StringVar(&o.userAgent, "user-agent", htmlconv.RemoteUserAgent, "User-Agent header sent when -flatten fetches remote images to embed")
 	fs.BoolVar(&o.keepDiagramSource, "keep-diagram-source", false, "keep the original diagram source in the output in addition to the rendered diagram (rendered first, then the source block)")
 	fs.StringVar(&o.cssPath, "css", "", "path to a CSS file appended after the built-in stylesheet in HTML output; also forces the browser-rendered PDF path, since the pure-Go PDF renderer has no CSS support")
@@ -71,8 +71,9 @@ func (o *options) apply() error {
 		htmlconv.PlantUMLServer = o.plantumlServer
 	}
 
-	// -flatten renders HTML diagrams to static images rather than inlining
-	// mermaid.js, for a self-contained file (e.g. importable into Google Docs).
+	// -flatten draws HTML diagrams once in a headless browser and keeps the
+	// rendered SVG rather than inlining mermaid.js, for a self-contained file
+	// that needs no JS runtime to view.
 	htmlconv.Flatten = o.flatten
 
 	// -user-agent overrides the User-Agent sent when -flatten embeds remote
