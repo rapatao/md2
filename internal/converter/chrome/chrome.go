@@ -306,9 +306,14 @@ func diagramPage(svg []byte) []byte {
 const diagramScale = 2
 
 // maxDiagramViewport bounds the viewport the diagram is laid out in, in CSS
-// pixels. A diagram larger than this is scaled down to fit rather than eating
-// diagramScale² bytes per pixel of browser surface.
-const maxDiagramViewport = 4096
+// pixels, so a runaway diagram cannot ask the browser for an unbounded surface.
+const maxDiagramViewport = 8192
+
+// maxCaptureSide bounds a snapshot's pixel dimensions. Past roughly this, the
+// browser stops growing its capture surface and returns an image cut off at the
+// right and bottom, so an outsized diagram is rendered at a lower device scale
+// (softer, but whole) rather than clipped.
+const maxCaptureSide = 16384
 
 // snapshotDiagram captures a single rendered diagram as a PNG.
 //
@@ -321,7 +326,8 @@ const maxDiagramViewport = 4096
 //
 // The capture itself uses an explicit clip (rod's Element.Screenshot grabs only
 // the viewport and then crops) with CaptureBeyondViewport still set, which
-// covers a diagram too big for maxDiagramViewport.
+// covers a diagram too big for maxDiagramViewport. Beyond that limit the device
+// scale is lowered rather than the capture cut short — see captureScale.
 func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
 	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
@@ -344,40 +350,81 @@ func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("measure diagram: %w", err)
 	}
+	natW, natH := nat.Value.Get("w").Num(), nat.Value.Get("h").Num()
+	width := viewportDim(natW)
 	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-		Width:             viewportDim(nat.Value.Get("w").Num()),
-		Height:            viewportDim(nat.Value.Get("h").Num()),
-		DeviceScaleFactor: diagramScale,
+		Width:             width,
+		Height:            viewportDim(natH),
+		DeviceScaleFactor: captureScale(natW, natH),
 	}); err != nil {
 		return nil, fmt.Errorf("size viewport to diagram: %w", err)
 	}
 
-	// Re-measure: the resize reflows the page, moving and growing the diagram.
-	res, err := target.Eval(`() => {
-		const r = this.getBoundingClientRect();
-		return {x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height};
-	}`)
+	box, err := measureAfterResize(target, width)
 	if err != nil {
-		return nil, fmt.Errorf("measure diagram: %w", err)
+		return nil, err
 	}
-	box := res.Value
 
 	png, err := page.Screenshot(false, &proto.PageCaptureScreenshot{
 		Format:                proto.PageCaptureScreenshotFormatPng,
 		CaptureBeyondViewport: true,
-		Clip: &proto.PageViewport{
-			X:      box.Get("x").Num(),
-			Y:      box.Get("y").Num(),
-			Width:  box.Get("w").Num(),
-			Height: box.Get("h").Num(),
-			// The device scale factor already renders at diagramScale.
-			Scale: 1,
-		},
+		Clip:                  &box,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("capture diagram: %w", err)
 	}
 	return png, nil
+}
+
+// resizeTimeout bounds the wait for a viewport resize to reach the page.
+const resizeTimeout = 5 * time.Second
+
+// measureAfterResize returns the target's box in page coordinates, once the page
+// has taken the new viewport width. Emulation.setDeviceMetricsOverride is
+// applied asynchronously, so measuring straight after it can return the box from
+// the old layout — and the capture then clips the wrong region: shifted off the
+// diagram, taking in the surrounding page at one edge and losing the diagram at
+// the other. Waiting for window.innerWidth to report the new width pins the
+// measurement to the layout the screenshot will see.
+func measureAfterResize(target *rod.Element, width int) (proto.PageViewport, error) {
+	deadline := time.Now().Add(resizeTimeout)
+	for {
+		res, err := target.Eval(`(want) => {
+			if (window.innerWidth !== want) return null;
+			const r = this.getBoundingClientRect();
+			return {x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height};
+		}`, width)
+		if err != nil {
+			return proto.PageViewport{}, fmt.Errorf("measure diagram: %w", err)
+		}
+		if box := res.Value; !box.Nil() {
+			return proto.PageViewport{
+				X:      box.Get("x").Num(),
+				Y:      box.Get("y").Num(),
+				Width:  box.Get("w").Num(),
+				Height: box.Get("h").Num(),
+				// The device scale factor already renders at diagramScale.
+				Scale: 1,
+			}, nil
+		}
+		if time.Now().After(deadline) {
+			return proto.PageViewport{}, fmt.Errorf("measure diagram: viewport still not %dpx wide after %s", width, resizeTimeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// captureScale is the device pixel ratio to snapshot a diagram of the given CSS
+// size at: diagramScale, reduced for a diagram whose snapshot would otherwise
+// run past maxCaptureSide.
+func captureScale(w, h float64) float64 {
+	side := math.Max(w, h)
+	if side*diagramScale <= maxCaptureSide {
+		return diagramScale
+	}
+	// A diagram bigger than the surface limit at 1:1 cannot be captured whole
+	// whatever we do; floor the scale so the browser still gets a sane value.
+	return math.Max(maxCaptureSide/side, 0.1)
 }
 
 // viewportDim rounds a measured diagram dimension up to a usable viewport
