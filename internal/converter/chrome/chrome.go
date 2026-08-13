@@ -7,7 +7,6 @@
 package chrome
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"math"
@@ -25,11 +24,11 @@ import (
 
 // Install the browser-backed hooks into the packages that need them. Those
 // packages cannot import chrome (chrome imports them), so the hooks are wired
-// here instead: the html -flatten diagram rasterizer, and the epub mermaid
+// here instead: the html -flatten diagram flattener, and the epub mermaid
 // renderer (an ebook reader has no JS runtime, so mermaid is pre-rendered to
 // inline SVG).
 func init() {
-	htmlconv.Rasterizer = Rasterize
+	htmlconv.DiagramFlattener = FlattenDiagrams
 	epub.MermaidRenderer = RenderMermaidSVG
 	docx.DiagramRasterizer = RenderDiagramPNG
 }
@@ -135,12 +134,16 @@ func waitMermaid(page *rod.Page) {
 	}
 }
 
-// Rasterize loads a rendered HTML document in a headless browser, lets the
-// inlined mermaid script draw every diagram to SVG, replaces each
-// <pre class="mermaid"> with an <img> holding a PNG snapshot, strips the now-
-// useless scripts, and returns the resulting static, self-contained HTML. It is
-// installed as html.Rasterizer to back the -flatten path.
-func Rasterize(doc []byte) (out []byte, err error) {
+// FlattenDiagrams loads a rendered HTML document in a headless browser, lets the
+// inlined mermaid script draw every diagram, strips the now-useless scripts, and
+// returns the resulting static, self-contained HTML. It is installed as
+// html.DiagramFlattener to back the -flatten path.
+//
+// This is the PDF path's mechanism: the browser draws each diagram as vector SVG
+// and that SVG is what the output keeps. Nothing is measured, clipped or
+// snapshotted, so no diagram can come out cut off at an edge, and it stays
+// resolution-independent — where a raster snapshot has to pick a scale.
+func FlattenDiagrams(doc []byte) (out []byte, err error) {
 	err = withPage(func(page *rod.Page) error {
 		if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
 			Width: 1280, Height: 1024,
@@ -160,33 +163,12 @@ func Rasterize(doc []byte) (out []byte, err error) {
 		}
 
 		// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
-		// before snapshotting so we capture the diagrams, not empty placeholders.
-		// A document without mermaid blocks (e.g. only d2, already inline SVG) has
-		// nothing to wait for, so skip the wait rather than eat its timeout.
+		// before reading the document back, so the output carries the drawn
+		// diagrams and not empty placeholders. A document without mermaid blocks
+		// (e.g. only d2, already inline SVG) has nothing to wait for, so skip the
+		// wait rather than eat its timeout.
 		if len(els) > 0 {
 			waitMermaid(page)
-		}
-
-		// Force a white page background so diagram snapshots carry an opaque white
-		// backdrop rather than transparency, keeping them legible wherever they land.
-		if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
-			return fmt.Errorf("set background: %w", err)
-		}
-		for _, el := range els {
-			png, err := snapshotDiagram(page, el)
-			if err != nil {
-				return err
-			}
-			uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
-			// Replace the rendered <pre class="mermaid"> with a plain <img>. rod
-			// binds `this` to the element, so the arrow function can act on it.
-			if _, err := el.Eval(`(src) => {
-				const img = document.createElement('img');
-				img.src = src;
-				this.replaceWith(img);
-			}`, uri); err != nil {
-				return fmt.Errorf("inline diagram: %w", err)
-			}
 		}
 
 		// The mermaid library and init script are dead weight in a static document.
@@ -315,19 +297,19 @@ const maxDiagramViewport = 8192
 // (softer, but whole) rather than clipped.
 const maxCaptureSide = 16384
 
-// snapshotDiagram captures a single rendered diagram as a PNG.
+// snapshotDiagram captures a single rendered diagram as a PNG, for the DOCX
+// converter (Word needs a raster; HTML keeps the SVG instead — see
+// FlattenDiagrams).
 //
-// The viewport is first resized to the diagram's natural size (from its
-// viewBox): mermaid emits width:100% SVGs, so in a window-sized viewport a
-// large diagram is squeezed to the window width — snapshotted blurry, and, when
-// the clip then reaches past the viewport, cut off on the right and bottom by
-// browsers that do not honour CaptureBeyondViewport. Laying it out at its own
-// size keeps the whole diagram on screen and crisp.
-//
-// The capture itself uses an explicit clip (rod's Element.Screenshot grabs only
-// the viewport and then crops) with CaptureBeyondViewport still set, which
-// covers a diagram too big for maxDiagramViewport. Beyond that limit the device
-// scale is lowered rather than the capture cut short — see captureScale.
+// The diagram is pinned to the top-left of a viewport sized to it and scaled to
+// fit, so the capture region is the whole viewport: (0,0,w,h). That is the same
+// rectangle under every screenshot coordinate convention, whether or not the
+// browser honours CaptureBeyondViewport and wherever the page happens to be
+// scrolled — the clip cannot drift onto the surrounding page or off an edge of
+// the diagram, which is what cut the top, bottom and right off earlier
+// snapshots. It also fixes resolution: mermaid emits width:100% SVGs, so in a
+// window-sized viewport a large diagram was laid out squeezed and snapshotted
+// blurry (a 9400px-wide flowchart at 2368x12).
 func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
 	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
@@ -340,27 +322,46 @@ func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	nat, err := target.Eval(`() => {
 		const vb = this.viewBox && this.viewBox.baseVal;
 		const r = this.getBoundingClientRect();
-		const w = (vb && vb.width) ? vb.width : r.width;
-		const h = (vb && vb.height) ? vb.height : r.height;
-		// Leave room for whatever the page puts around the diagram (body margins,
-		// padding), so the resized viewport really does give it its natural width.
-		const gutter = Math.max(0, window.innerWidth - r.width);
-		return {w: w + gutter, h: h + gutter};
+		return {
+			w: (vb && vb.width) ? vb.width : r.width,
+			h: (vb && vb.height) ? vb.height : r.height,
+			scalable: !!(vb && vb.width && vb.height),
+		};
 	}`)
 	if err != nil {
 		return nil, fmt.Errorf("measure diagram: %w", err)
 	}
 	natW, natH := nat.Value.Get("w").Num(), nat.Value.Get("h").Num()
-	width := viewportDim(natW)
+
+	// A diagram past the viewport bound is drawn smaller so it still fits whole.
+	// Only a diagram with a viewBox can be scaled by CSS width alone without
+	// distorting it; without one the browser gets the natural size and the
+	// viewport bound does the clamping.
+	fit := 1.0
+	if nat.Value.Get("scalable").Bool() {
+		fit = math.Min(1, math.Min(maxDiagramViewport/natW, maxDiagramViewport/natH))
+	}
+	w, h := natW*fit, natH*fit
+
 	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-		Width:             width,
-		Height:            viewportDim(natH),
-		DeviceScaleFactor: captureScale(natW, natH),
+		Width:             viewportDim(w),
+		Height:            viewportDim(h),
+		DeviceScaleFactor: captureScale(w, h),
 	}); err != nil {
 		return nil, fmt.Errorf("size viewport to diagram: %w", err)
 	}
 
-	box, err := measureAfterResize(target, width)
+	// Pin the diagram alone at the viewport origin, on an opaque white backdrop
+	// so it stays legible wherever it lands. Fixed positioning takes it out of
+	// the page flow, so nothing around it can shift it or bleed into the shot.
+	if _, err := target.Eval(`(w, scalable) => {
+		this.style.cssText = 'position:fixed;left:0;top:0;margin:0;padding:0;background:#fff;max-width:none;max-height:none'
+			+ (scalable ? ';width:' + w + 'px;height:auto' : '');
+	}`, w, nat.Value.Get("scalable").Bool()); err != nil {
+		return nil, fmt.Errorf("pin diagram: %w", err)
+	}
+
+	box, err := measureAfterResize(target, viewportDim(w))
 	if err != nil {
 		return nil, err
 	}

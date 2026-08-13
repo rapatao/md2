@@ -111,17 +111,18 @@ func enabledDiagramLang(n *ast.FencedCodeBlock, src []byte) string {
 // Flatten controls how enabled diagrams are emitted. When false (default), a
 // diagram becomes a <pre class="mermaid"> with the mermaid library inlined, so
 // it renders client-side in a browser — interactive, but needing a JS runtime
-// to view. When true, the document is rendered in a headless browser and each
-// diagram is replaced by a static <img> (a PNG), producing a fully portable
-// file that displays anywhere (e.g. imported into Google Docs). Set from the
-// -flatten CLI flag.
+// to view. When true, the document is drawn once in a headless browser and each
+// diagram is kept as the rendered inline SVG, with the library dropped: a
+// static file that needs no JS runtime, the way the PDF path already works. Set
+// from the -flatten CLI flag.
 var Flatten bool
 
-// Rasterizer, if set, flattens a diagram-bearing HTML document to one with
-// static <img> diagrams using a headless browser. The chrome package installs
-// it via init; html does not import chrome (which imports html) so as to avoid
-// an import cycle, hence this indirection.
-var Rasterizer func(doc []byte) ([]byte, error)
+// DiagramFlattener, if set, draws a diagram-bearing HTML document's diagrams in
+// a headless browser and returns the document with the rendered SVG in place of
+// the client-side script. The chrome package installs it via init; html does not
+// import chrome (which imports html) so as to avoid an import cycle, hence this
+// indirection.
+var DiagramFlattener func(doc []byte) ([]byte, error)
 
 // KeepDiagramSource, when true, keeps the original fenced diagram source in the
 // output in addition to the rendered diagram — the rendered diagram is emitted
@@ -219,14 +220,14 @@ func convert(src []byte, baseDir string, w io.Writer) error {
 		return err
 	}
 
-	// With -flatten, replace client-side diagrams with static images so the
-	// output is self-contained and needs no JS runtime to view. Only documents
-	// that actually contain an enabled diagram need the browser.
+	// With -flatten, draw the client-side diagrams once and keep the rendered
+	// SVG, so the output is self-contained and needs no JS runtime to view. Only
+	// documents that actually contain an enabled diagram need the browser.
 	if Flatten && RequiresBrowser(src) {
-		if Rasterizer == nil {
+		if DiagramFlattener == nil {
 			return fmt.Errorf("-flatten needs headless-browser support, which is unavailable")
 		}
-		if doc, err = Rasterizer(doc); err != nil {
+		if doc, err = DiagramFlattener(doc); err != nil {
 			return err
 		}
 	}
@@ -699,9 +700,10 @@ th{background:#f2f2f2}
 code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px;font-family:ui-monospace,Menlo,Consolas,monospace}
 pre{background:#f4f4f4;padding:1rem;border-radius:6px;overflow:auto}
 pre code{background:none;padding:0}
-pre.mermaid{background:none;padding:0;text-align:center}
+pre.mermaid{background:none;padding:0;text-align:center;overflow:visible}
 blockquote{border-left:4px solid #ddd;margin:0;padding:.2rem 1rem;color:#555}
-img{max-width:100%}`
+img{max-width:100%}
+pre.mermaid svg,div.d2 svg,div.plantuml svg{max-width:100%;height:auto}`
 
 const docHeadOpen = `<!DOCTYPE html>
 <html lang="en">
