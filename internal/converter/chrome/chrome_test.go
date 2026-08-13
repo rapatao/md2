@@ -82,6 +82,22 @@ func TestDownloadBrowserConsentError(t *testing.T) {
 	}
 }
 
+func TestCaptureScale(t *testing.T) {
+	for _, tc := range []struct {
+		w, h float64
+		want float64
+	}{
+		{800, 600, diagramScale},                          // fits at full scale
+		{maxCaptureSide / diagramScale, 10, diagramScale}, // exactly the limit
+		{maxCaptureSide, 10, 1},                           // too wide: scale down
+		{10, maxCaptureSide * 2, 0.5},                     // too tall: scale down
+	} {
+		if got := captureScale(tc.w, tc.h); got != tc.want {
+			t.Errorf("captureScale(%v, %v) = %v, want %v", tc.w, tc.h, got, tc.want)
+		}
+	}
+}
+
 func TestViewportDim(t *testing.T) {
 	for _, tc := range []struct {
 		in   float64
