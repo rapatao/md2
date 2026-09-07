@@ -205,6 +205,41 @@ nix:
     license: "mit"
     main_program: md2
 
+# Arch User Repository. goreleaser generates the PKGBUILD + .SRCINFO from the
+# already-built linux tar.gz archives (no build-from-source; md2 is CGO-free)
+# and pushes them to aur.archlinux.org over SSH. The "-bin" suffix is required
+# by AUR guidelines for prebuilt-binary packages whose sources are public.
+# Requires a one-time AUR account + registered SSH key, and the AUR_KEY secret
+# (passwordless private key). See: https://goreleaser.com/customization/aur/
+aurs:
+  - name: md2-bin
+    ids:
+      - md2
+    homepage: "https://github.com/rapatao/md2"
+    description: "Convert markdown files to PDF, HTML, and text"
+    license: MIT
+    maintainers:
+      - "Luiz Henrique Rapatao <rapatao@rapatao.com>"
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/md2-bin.git"
+    # Don't push to AUR on prereleases (mirrors the prerelease guard on the
+    # docker_manifests :latest / :slim tags).
+    skip_upload: auto
+    provides:
+      - md2
+    conflicts:
+      - md2
+    # Chromium is only needed for the PDF browser fallback (non-BMP glyphs such
+    # as emoji); the binary runs standalone otherwise.
+    optdepends:
+      - "chromium: PDF rendering fallback for non-BMP glyphs"
+    # Install the binary and, since MIT is a "custom" license on Arch, the
+    # license text (required by AUR guidelines; keeps namcap clean). LICENSE
+    # ships inside the release tarball alongside the md2 binary.
+    package: |-
+      install -Dm755 "./md2" "${pkgdir}/usr/bin/md2"
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/md2-bin/LICENSE"
+
 release:
   github:
     owner: rapatao
