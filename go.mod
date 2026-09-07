@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/go-rod/rod v0.116.2
 	github.com/stephenafamo/goldmark-pdf v0.4.2
-	github.com/yuin/goldmark v1.8.5
+	github.com/yuin/goldmark v1.8.6
 	oss.terrastruct.com/d2 v0.7.2
 	oss.terrastruct.com/util-go v0.1.0
 )
