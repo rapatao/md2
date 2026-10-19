@@ -259,7 +259,9 @@ func fetch(url, dst string) error {
 }
 
 // unzip extracts archive into dst, keeping file modes (the browser binary must
-// stay executable) and refusing entries that would land outside dst.
+// stay executable). It refuses entries that would land outside dst and
+// anything but plain files and directories; Chrome for Testing archives have
+// no symlinks.
 func unzip(archive, dst string) error {
 	r, err := zip.OpenReader(archive)
 	if err != nil {
@@ -273,17 +275,20 @@ func unzip(archive, dst string) error {
 		if !strings.HasPrefix(path, root) {
 			return fmt.Errorf("illegal path in archive: %s", f.Name)
 		}
-		if err := extract(f, path, root); err != nil {
+		if err := extract(f, path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func extract(f *zip.File, path, root string) error {
+func extract(f *zip.File, path string) error {
 	mode := f.Mode()
 	if mode.IsDir() {
 		return os.MkdirAll(path, 0o755)
+	}
+	if !mode.IsRegular() {
+		return fmt.Errorf("unsupported entry in archive: %s (%s)", f.Name, mode.Type())
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -294,17 +299,6 @@ func extract(f *zip.File, path, root string) error {
 		return err
 	}
 	defer rc.Close()
-
-	if mode&os.ModeSymlink != 0 {
-		target, err := io.ReadAll(rc)
-		if err != nil {
-			return err
-		}
-		if filepath.IsAbs(string(target)) || !strings.HasPrefix(filepath.Join(filepath.Dir(path), string(target)), root) {
-			return fmt.Errorf("illegal symlink in archive: %s -> %s", f.Name, target)
-		}
-		return os.Symlink(string(target), path)
-	}
 
 	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm()|0o600)
 	if err != nil {

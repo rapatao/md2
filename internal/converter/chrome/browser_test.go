@@ -95,3 +95,29 @@ func TestCFTPlatform(t *testing.T) {
 		t.Error("expected error for unsupported platform")
 	}
 }
+
+func TestUnzipRejectsSymlink(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	h := &zip.FileHeader{Name: "link"}
+	h.SetMode(os.ModeSymlink | 0o777)
+	w, err := zw.CreateHeader(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte("/etc/passwd"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "link.zip")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := unzip(archive, dst); err == nil {
+		t.Fatal("expected error for symlink entry")
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "link")); err == nil {
+		t.Error("symlink entry was created")
+	}
+}
