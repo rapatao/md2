@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-rod/rod/lib/launcher"
-
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
@@ -114,7 +112,7 @@ func TestViewportDim(t *testing.T) {
 // A diagram far wider than the browser window must be snapshotted at (near) its
 // own size, not squeezed into the window and cut off at the clip edge.
 func TestRenderDiagramPNGKeepsWideDiagramWhole(t *testing.T) {
-	if _, has := launcher.LookPath(); !has {
+	if _, has := lookPath(); !has {
 		t.Skip("no browser installed")
 	}
 
@@ -142,7 +140,7 @@ func TestRenderDiagramPNGKeepsWideDiagramWhole(t *testing.T) {
 // -flatten must leave the drawn diagram in the document as vector SVG, with the
 // mermaid library dropped — the PDF path's mechanism, nothing snapshotted.
 func TestFlattenDiagramsKeepsRenderedSVG(t *testing.T) {
-	if _, has := launcher.LookPath(); !has {
+	if _, has := lookPath(); !has {
 		t.Skip("no browser installed")
 	}
 

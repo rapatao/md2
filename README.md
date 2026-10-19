@@ -158,10 +158,10 @@ PDF uses a two-stage strategy:
    styled HTML version to PDF with Chrome/Chromium for full fidelity.
 
 The fallback prefers a browser already installed on the system. If none is
-found it asks before downloading Chromium (~150MB, cached for later runs):
+found it asks before downloading Chromium (~120MB, Chrome for Testing's `chrome-headless-shell`, cached for later runs):
 
 ```
-No Chrome/Chromium found. Download Chromium (~150MB) to render the PDF? [y/N]:
+No Chrome/Chromium found. Download Chromium (~120MB) to render the PDF? [y/N]:
 ```
 
 On a non-interactive terminal it declines unless `-allow-download` is passed.
@@ -306,8 +306,8 @@ with no `.md` files is an error. The input must be *either* a single directory
 
 | Format | Extension | Engine |
 |--------|-----------|--------|
-| `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
-| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, pre-drawn inline SVG via go-rod) or in-process D2 inline SVG |
+| `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (chromedp) |
+| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, pre-drawn inline SVG via chromedp) or in-process D2 inline SVG |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
 | `epub` | `.epub`   | stdlib `archive/zip` EPUB3 container (pure Go); chapter shares the HTML pipeline; per-heading nested TOC; local images packaged; light/dark diagram variants |
 | `docx` | `.docx`   | stdlib `archive/zip` OOXML package (pure Go); goldmark AST → WordprocessingML; named heading styles (Navigation pane), native list numbering, tables, syntax-highlighted code in a bordered box (chroma `github` colors as run colors), local images embedded; enabled diagrams (`-render`) rasterized to embedded PNGs via headless browser |
@@ -357,7 +357,8 @@ internal/converter/
   text/text.go                markdown -> plain text (AST walker)
   epub/epub.go                markdown -> EPUB3 ebook (stdlib archive/zip)
   docx/docx.go                markdown -> Word .docx (OOXML, stdlib archive/zip)
-  chrome/chrome.go            HTML -> PDF / diagram capture via headless browser (go-rod)
+  chrome/chrome.go            HTML -> PDF / diagram capture via headless browser (chromedp)
+  chrome/browser.go           find an installed browser, or download chrome-headless-shell (with consent)
 internal/css/                 -css load, @import inlining, append to stylesheet
 internal/merge/               concatenate multiple input files into one document
 internal/urlref/              classify image/link references as local paths vs URLs

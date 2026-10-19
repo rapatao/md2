@@ -7,15 +7,19 @@
 package chrome
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"path/filepath"
 	"time"
 
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 
 	"github.com/rapatao/md2/internal/converter/docx"
 	"github.com/rapatao/md2/internal/converter/epub"
@@ -38,7 +42,7 @@ func init() {
 const mermaidTimeout = 30 * time.Second
 
 // Consent is consulted when no browser is installed and one must be downloaded
-// to render the PDF. It must return true to authorize a (~150MB) Chromium
+// to render the PDF. It must return true to authorize a (~120MB) Chromium
 // download. A nil Consent denies the download.
 var Consent func() (bool, error)
 
@@ -61,12 +65,9 @@ func convertFrom(src []byte, baseDir string, w io.Writer) error {
 		return err
 	}
 
-	return withPage(func(page *rod.Page) error {
-		if err := page.SetDocumentContent(string(doc)); err != nil {
-			return fmt.Errorf("set page content: %w", err)
-		}
-		if err := page.WaitLoad(); err != nil {
-			return fmt.Errorf("wait for page load: %w", err)
+	return withPage(func(ctx context.Context) error {
+		if err := loadDocument(ctx, doc); err != nil {
+			return err
 		}
 
 		// Mermaid renders diagrams to SVG asynchronously; wait for it to settle
@@ -74,64 +75,85 @@ func convertFrom(src []byte, baseDir string, w io.Writer) error {
 		// placeholders. d2 diagrams route through the browser too but are already
 		// inline SVG at load, so only mermaid needs the wait.
 		if htmlconv.RequiresMermaidWait(src) {
-			waitMermaid(page)
+			waitMermaid(ctx)
 		}
 
-		stream, err := page.PDF(&proto.PagePrintToPDF{PrintBackground: true})
+		printBackground := true
+		pdf, err := call(ctx, page.PrintToPDF, page.PrintToPDFParams{PrintBackground: &printBackground})
 		if err != nil {
 			return fmt.Errorf("print to PDF: %w", err)
 		}
-		defer stream.Close()
-
-		if _, err := io.Copy(w, stream); err != nil {
+		if _, err := w.Write(pdf.Data); err != nil {
 			return fmt.Errorf("write PDF: %w", err)
 		}
 		return nil
 	})
 }
 
-// withPage launches a headless browser, opens a blank page, and runs fn against
-// it. The launcher and browser are always cleaned up — including when setup
-// fails partway — so no Chromium process is left behind.
-func withPage(fn func(*rod.Page) error) error {
+// withPage launches a headless browser, opens a blank page, and runs fn with a
+// context bound to it. The browser and its temporary profile are always cleaned
+// up — including when setup fails partway — so no Chromium process is left
+// behind.
+func withPage(fn func(ctx context.Context) error) error {
 	bin, err := browserPath()
 	if err != nil {
 		return err
 	}
 
-	l := launcher.New().Bin(bin).Headless(true)
-	defer l.Cleanup()
+	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(bin))
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancelAlloc()
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
 
-	url, err := l.Launch()
-	if err != nil {
+	if err := chromedp.Do(ctx, chromedp.Navigate("about:blank")); err != nil {
 		return fmt.Errorf("launch browser: %w", err)
 	}
-
-	browser := rod.New().ControlURL(url)
-	if err := browser.Connect(); err != nil {
-		return fmt.Errorf("connect to browser: %w", err)
-	}
-	defer browser.Close()
-
-	page, err := browser.Page(proto.TargetCreateTarget{})
-	if err != nil {
-		return fmt.Errorf("open page: %w", err)
-	}
-	return fn(page)
+	return fn(ctx)
 }
+
+// call sends a protocol command to the page of ctx.
+func call[P, R any](ctx context.Context, c cdp.Command[P, R], params P) (R, error) {
+	return chromedp.Run(ctx, func(ctx context.Context, t *chromedp.Target) (R, error) {
+		return cdp.Call(ctx, t, c, params)
+	})
+}
+
+// eval evaluates a JavaScript expression in the page of ctx and decodes its
+// result as T (chromedp.Void to discard it).
+func eval[T any](ctx context.Context, expr string) (T, error) {
+	return chromedp.Run(ctx, chromedp.Evaluate[T](expr))
+}
+
+// loadDocument replaces the page's document with doc and waits for it to
+// finish loading, inline scripts included.
+func loadDocument(ctx context.Context, doc []byte) error {
+	tree, err := call(ctx, page.GetFrameTree, cdp.Empty{})
+	if err != nil {
+		return fmt.Errorf("set page content: %w", err)
+	}
+	if _, err := call(ctx, page.SetDocumentContent, page.SetDocumentContentParams{
+		FrameID: tree.FrameTree.Frame.ID, HTML: string(doc),
+	}); err != nil {
+		return fmt.Errorf("set page content: %w", err)
+	}
+	if err := chromedp.Do(ctx, chromedp.Poll[chromedp.Void](`document.readyState === 'complete'`,
+		chromedp.WithPollingTimeout(loadTimeout))); err != nil {
+		return fmt.Errorf("wait for page load: %w", err)
+	}
+	return nil
+}
+
+// loadTimeout bounds how long a document may take to finish loading.
+const loadTimeout = 30 * time.Second
 
 // waitMermaid polls until the page's mermaid init script signals completion
 // (via window.__md2MermaidDone) or the timeout elapses. A timeout is not fatal:
 // the PDF is still printed with whatever has rendered so far.
-func waitMermaid(page *rod.Page) {
-	deadline := time.Now().Add(mermaidTimeout)
-	for time.Now().Before(deadline) {
-		res, err := page.Eval(`() => window.__md2MermaidDone === true`)
-		if err == nil && res.Value.Bool() {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+func waitMermaid(ctx context.Context) {
+	_ = chromedp.Do(ctx, chromedp.Poll[chromedp.Void](`window.__md2MermaidDone === true`,
+		chromedp.WithPollingInterval(50*time.Millisecond),
+		chromedp.WithPollingTimeout(mermaidTimeout)))
 }
 
 // FlattenDiagrams loads a rendered HTML document in a headless browser, lets the
@@ -144,20 +166,15 @@ func waitMermaid(page *rod.Page) {
 // snapshotted, so no diagram can come out cut off at an edge, and it stays
 // resolution-independent — where a raster snapshot has to pick a scale.
 func FlattenDiagrams(doc []byte) (out []byte, err error) {
-	err = withPage(func(page *rod.Page) error {
-		if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-			Width: 1280, Height: 1024,
-		}); err != nil {
+	err = withPage(func(ctx context.Context) error {
+		if err := chromedp.Do(ctx, chromedp.EmulateViewport(1280, 1024)); err != nil {
 			return fmt.Errorf("set viewport: %w", err)
 		}
-		if err := page.SetDocumentContent(string(doc)); err != nil {
-			return fmt.Errorf("set page content: %w", err)
-		}
-		if err := page.WaitLoad(); err != nil {
-			return fmt.Errorf("wait for page load: %w", err)
+		if err := loadDocument(ctx, doc); err != nil {
+			return err
 		}
 
-		els, err := page.Elements("pre.mermaid")
+		hasMermaid, err := eval[bool](ctx, `document.querySelector('pre.mermaid') !== null`)
 		if err != nil {
 			return fmt.Errorf("find diagrams: %w", err)
 		}
@@ -167,18 +184,16 @@ func FlattenDiagrams(doc []byte) (out []byte, err error) {
 		// diagrams and not empty placeholders. A document without mermaid blocks
 		// (e.g. only d2, already inline SVG) has nothing to wait for, so skip the
 		// wait rather than eat its timeout.
-		if len(els) > 0 {
-			waitMermaid(page)
+		if hasMermaid {
+			waitMermaid(ctx)
 		}
 
 		// The mermaid library and init script are dead weight in a static document.
-		if _, err := page.Eval(`() => {
-			document.querySelectorAll('script').forEach((s) => s.remove());
-		}`); err != nil {
+		if _, err := eval[chromedp.Void](ctx, `document.querySelectorAll('script').forEach((s) => s.remove())`); err != nil {
 			return fmt.Errorf("strip scripts: %w", err)
 		}
 
-		html, err := page.HTML()
+		html, err := eval[string](ctx, `document.documentElement.outerHTML`)
 		if err != nil {
 			return fmt.Errorf("read rendered html: %w", err)
 		}
@@ -198,23 +213,19 @@ func FlattenDiagrams(doc []byte) (out []byte, err error) {
 func RenderMermaidSVG(source []byte, theme string) ([]byte, error) {
 	doc := htmlconv.MermaidStandalonePage(source, theme)
 	var svg []byte
-	err := withPage(func(page *rod.Page) error {
-		if err := page.SetDocumentContent(string(doc)); err != nil {
-			return fmt.Errorf("set page content: %w", err)
+	err := withPage(func(ctx context.Context) error {
+		if err := loadDocument(ctx, doc); err != nil {
+			return err
 		}
-		if err := page.WaitLoad(); err != nil {
-			return fmt.Errorf("wait for page load: %w", err)
-		}
-		waitMermaid(page)
-		el, err := page.Element("pre.mermaid svg")
-		if err != nil {
-			return fmt.Errorf("find diagram: %w", err)
-		}
-		markup, err := el.HTML()
+		waitMermaid(ctx)
+		markup, err := eval[*string](ctx, `document.querySelector('pre.mermaid svg')?.outerHTML ?? null`)
 		if err != nil {
 			return fmt.Errorf("read diagram svg: %w", err)
 		}
-		svg = []byte(markup)
+		if markup == nil {
+			return errors.New("find diagram: no rendered svg")
+		}
+		svg = []byte(*markup)
 		return nil
 	})
 	return svg, err
@@ -251,25 +262,18 @@ func RenderDiagramPNG(source []byte, kind string) (png []byte, err error) {
 		return nil, fmt.Errorf("unknown diagram %q", kind)
 	}
 
-	err = withPage(func(page *rod.Page) error {
-		if err := page.SetDocumentContent(string(doc)); err != nil {
-			return fmt.Errorf("set page content: %w", err)
-		}
-		if err := page.WaitLoad(); err != nil {
-			return fmt.Errorf("wait for page load: %w", err)
+	err = withPage(func(ctx context.Context) error {
+		if err := loadDocument(ctx, doc); err != nil {
+			return err
 		}
 		if waitForMermaid {
-			waitMermaid(page)
+			waitMermaid(ctx)
 		}
 		// Opaque white backdrop so the snapshot is legible on the document page.
-		if _, err := page.Eval(`() => { document.body.style.background = '#fff'; }`); err != nil {
+		if _, err := eval[chromedp.Void](ctx, `document.body.style.background = '#fff'`); err != nil {
 			return fmt.Errorf("set background: %w", err)
 		}
-		el, err := page.Element(selector)
-		if err != nil {
-			return fmt.Errorf("find diagram: %w", err)
-		}
-		png, err = snapshotDiagram(page, el)
+		png, err = snapshotDiagram(ctx, selector)
 		return err
 	})
 	return png, err
@@ -310,42 +314,53 @@ const maxCaptureSide = 16384
 // snapshots. It also fixes resolution: mermaid emits width:100% SVGs, so in a
 // window-sized viewport a large diagram was laid out squeezed and snapshotted
 // blurry (a 9400px-wide flowchart at 2368x12).
-func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
-	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
-	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
-	// not produce an svg (e.g. a diagram with a syntax error).
-	target := pre
-	if svg, err := pre.Element("svg"); err == nil {
-		target = svg
+func snapshotDiagram(ctx context.Context, selector string) ([]byte, error) {
+	sel, err := json.Marshal(selector)
+	if err != nil {
+		return nil, err
 	}
 
-	nat, err := target.Eval(`() => {
-		const vb = this.viewBox && this.viewBox.baseVal;
-		const r = this.getBoundingClientRect();
+	// Prefer the rendered <svg>: it has a tight bounding box, avoiding the wide
+	// whitespace of the centered <pre>. Fall back to the <pre> if mermaid did
+	// not produce an svg (e.g. a diagram with a syntax error). The target is
+	// kept on window so later evaluations address the same element.
+	nat, err := eval[*struct {
+		W        float64 `json:"w"`
+		H        float64 `json:"h"`
+		Scalable bool    `json:"scalable"`
+	}](ctx, `(() => {
+		const pre = document.querySelector(`+string(sel)+`);
+		if (!pre) return null;
+		const t = window.__md2Target = pre.querySelector('svg') || pre;
+		const vb = t.viewBox && t.viewBox.baseVal;
+		const r = t.getBoundingClientRect();
 		return {
 			w: (vb && vb.width) ? vb.width : r.width,
 			h: (vb && vb.height) ? vb.height : r.height,
 			scalable: !!(vb && vb.width && vb.height),
 		};
-	}`)
+	})()`)
 	if err != nil {
 		return nil, fmt.Errorf("measure diagram: %w", err)
 	}
-	natW, natH := nat.Value.Get("w").Num(), nat.Value.Get("h").Num()
+	if nat == nil {
+		return nil, fmt.Errorf("find diagram: no %s element", selector)
+	}
+	natW, natH := nat.W, nat.H
 
 	// A diagram past the viewport bound is drawn smaller so it still fits whole.
 	// Only a diagram with a viewBox can be scaled by CSS width alone without
 	// distorting it; without one the browser gets the natural size and the
 	// viewport bound does the clamping.
 	fit := 1.0
-	if nat.Value.Get("scalable").Bool() {
+	if nat.Scalable {
 		fit = math.Min(1, math.Min(maxDiagramViewport/natW, maxDiagramViewport/natH))
 	}
 	w, h := natW*fit, natH*fit
 
-	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
-		Width:             viewportDim(w),
-		Height:            viewportDim(h),
+	if _, err := call(ctx, emulation.SetDeviceMetricsOverride, emulation.SetDeviceMetricsOverrideParams{
+		Width:             int64(viewportDim(w)),
+		Height:            int64(viewportDim(h)),
 		DeviceScaleFactor: captureScale(w, h),
 	}); err != nil {
 		return nil, fmt.Errorf("size viewport to diagram: %w", err)
@@ -354,27 +369,28 @@ func snapshotDiagram(page *rod.Page, pre *rod.Element) ([]byte, error) {
 	// Pin the diagram alone at the viewport origin, on an opaque white backdrop
 	// so it stays legible wherever it lands. Fixed positioning takes it out of
 	// the page flow, so nothing around it can shift it or bleed into the shot.
-	if _, err := target.Eval(`(w, scalable) => {
-		this.style.cssText = 'position:fixed;left:0;top:0;margin:0;padding:0;background:#fff;max-width:none;max-height:none'
+	if _, err := eval[chromedp.Void](ctx, fmt.Sprintf(`((w, scalable) => {
+		window.__md2Target.style.cssText = 'position:fixed;left:0;top:0;margin:0;padding:0;background:#fff;max-width:none;max-height:none'
 			+ (scalable ? ';width:' + w + 'px;height:auto' : '');
-	}`, w, nat.Value.Get("scalable").Bool()); err != nil {
+	})(%v, %v)`, w, nat.Scalable)); err != nil {
 		return nil, fmt.Errorf("pin diagram: %w", err)
 	}
 
-	box, err := measureAfterResize(target, viewportDim(w))
+	box, err := measureAfterResize(ctx, viewportDim(w))
 	if err != nil {
 		return nil, err
 	}
 
-	png, err := page.Screenshot(false, &proto.PageCaptureScreenshot{
-		Format:                proto.PageCaptureScreenshotFormatPng,
-		CaptureBeyondViewport: true,
-		Clip:                  &box,
+	beyondViewport := true
+	shot, err := call(ctx, page.CaptureScreenshot, page.CaptureScreenshotParams{
+		Format:                page.CaptureScreenshotFormatPng,
+		CaptureBeyondViewport: &beyondViewport,
+		Clip:                  box,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("capture diagram: %w", err)
 	}
-	return png, nil
+	return shot.Data, nil
 }
 
 // resizeTimeout bounds the wait for a viewport resize to reach the page.
@@ -387,29 +403,34 @@ const resizeTimeout = 5 * time.Second
 // diagram, taking in the surrounding page at one edge and losing the diagram at
 // the other. Waiting for window.innerWidth to report the new width pins the
 // measurement to the layout the screenshot will see.
-func measureAfterResize(target *rod.Element, width int) (proto.PageViewport, error) {
+func measureAfterResize(ctx context.Context, width int) (*page.Viewport, error) {
 	deadline := time.Now().Add(resizeTimeout)
 	for {
-		res, err := target.Eval(`(want) => {
+		box, err := eval[*struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+			W float64 `json:"w"`
+			H float64 `json:"h"`
+		}](ctx, fmt.Sprintf(`((want) => {
 			if (window.innerWidth !== want) return null;
-			const r = this.getBoundingClientRect();
+			const r = window.__md2Target.getBoundingClientRect();
 			return {x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height};
-		}`, width)
+		})(%d)`, width))
 		if err != nil {
-			return proto.PageViewport{}, fmt.Errorf("measure diagram: %w", err)
+			return nil, fmt.Errorf("measure diagram: %w", err)
 		}
-		if box := res.Value; !box.Nil() {
-			return proto.PageViewport{
-				X:      box.Get("x").Num(),
-				Y:      box.Get("y").Num(),
-				Width:  box.Get("w").Num(),
-				Height: box.Get("h").Num(),
+		if box != nil {
+			return &page.Viewport{
+				X:      box.X,
+				Y:      box.Y,
+				Width:  box.W,
+				Height: box.H,
 				// The device scale factor already renders at diagramScale.
 				Scale: 1,
 			}, nil
 		}
 		if time.Now().After(deadline) {
-			return proto.PageViewport{}, fmt.Errorf("measure diagram: viewport still not %dpx wide after %s", width, resizeTimeout)
+			return nil, fmt.Errorf("measure diagram: viewport still not %dpx wide after %s", width, resizeTimeout)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -440,44 +461,4 @@ func viewportDim(v float64) int {
 		return maxDiagramViewport
 	}
 	return d
-}
-
-// browserGetter downloads a browser on demand, returning its path.
-// *launcher.Browser satisfies it.
-type browserGetter interface {
-	Get() (string, error)
-}
-
-// browserPath returns the path to a usable browser: an already-installed one,
-// a previously downloaded one, or a freshly downloaded one (with consent).
-func browserPath() (string, error) {
-	// Prefer a browser already installed on the system.
-	if path, has := launcher.LookPath(); has {
-		return path, nil
-	}
-
-	// Reuse a Chromium we downloaded on an earlier run, if present.
-	b := launcher.NewBrowser()
-	if b.Validate() == nil {
-		return b.BinPath(), nil
-	}
-
-	// None available — downloading requires explicit consent.
-	return downloadBrowser(b)
-}
-
-// downloadBrowser asks Consent and, only if granted, downloads a browser.
-// A nil or declining Consent yields an error without downloading.
-func downloadBrowser(b browserGetter) (string, error) {
-	allow := false
-	if Consent != nil {
-		var err error
-		if allow, err = Consent(); err != nil {
-			return "", err
-		}
-	}
-	if !allow {
-		return "", fmt.Errorf("no Chrome/Chromium found and download not authorized (re-run with -allow-download to render the document)")
-	}
-	return b.Get()
 }
