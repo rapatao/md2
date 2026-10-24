@@ -28,6 +28,9 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
