@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/chromedp/cdproto v0.158.3
+	github.com/chromedp/cdproto v0.158.4
 	github.com/chromedp/chromedp v0.21.0
 	github.com/stephenafamo/goldmark-pdf v0.4.2
 	github.com/yuin/goldmark v1.8.6
