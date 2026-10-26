@@ -2,9 +2,12 @@ package pdf
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	htmlconv "github.com/rapatao/md2/internal/converter/html"
@@ -64,6 +67,35 @@ func TestRenderPureGoSimple(t *testing.T) {
 	}
 	if !bytes.HasPrefix(buf.Bytes(), []byte("%PDF")) {
 		t.Errorf("output is not a PDF: %q", buf.Bytes()[:min(4, buf.Len())])
+	}
+}
+
+func TestRenderPureGoDoesNotEscapeHTML(t *testing.T) {
+	src := "1. **topic**\n  * *subtopic*: on: `200 {\"status\": \"Ok\"}`\n\nsay \"hi\" & <b>\n"
+	var buf bytes.Buffer
+	if err := renderPureGo([]byte(src), "", &buf); err != nil {
+		t.Fatalf("renderPureGo: %v", err)
+	}
+
+	var text bytes.Buffer
+	for _, m := range regexp.MustCompile(`(?s)stream\r?\n(.*?)endstream`).FindAllSubmatch(buf.Bytes(), -1) {
+		r, err := zlib.NewReader(bytes.NewReader(m[1]))
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(&text, r)
+	}
+	plain := bytes.ReplaceAll(text.Bytes(), []byte{0}, nil)
+
+	for _, entity := range []string{"&quot;", "&amp;", "&lt;", "&gt;"} {
+		if bytes.Contains(plain, []byte(entity)) {
+			t.Errorf("PDF text contains escaped entity %s", entity)
+		}
+	}
+	for _, want := range []string{`{"status": "Ok"}`, `say "hi" &`} {
+		if !bytes.Contains(plain, []byte(want)) {
+			t.Errorf("PDF text missing %q", want)
+		}
 	}
 }
 

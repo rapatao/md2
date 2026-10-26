@@ -97,6 +97,9 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 		// path uses, rather than goldmark-pdf's default "monokai", so output is
 		// consistent across the pure-Go and browser-rendered paths.
 		gpdf.WithCodeBlockTheme(styles.Get("github")),
+		// goldmark-pdf escapes HTML by default, which prints entities like
+		// &quot; literally since a PDF has no HTML layer to decode them.
+		gpdf.WithEscapeHTML(false),
 	}
 	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
 	// only resolve when md2 happens to run from the input file's directory.
