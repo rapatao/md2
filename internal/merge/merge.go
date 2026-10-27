@@ -5,6 +5,7 @@ package merge
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,15 +16,17 @@ import (
 // Inputs reads and concatenates the given files, in order, into a single
 // markdown source separated by blank lines (forcing a fresh block boundary so
 // the last line of one file never merges into the first line of the next).
+// An input of "-" reads from stdin instead of a file; its relative image
+// references (when merged) resolve against the working directory.
 // With more than one input, each file's relative image references are
 // rewritten to absolute paths against its own directory first, since the
 // merged document has no single directory to resolve them against.
-func Inputs(inputs []string) ([]byte, error) {
+func Inputs(inputs []string, stdin io.Reader) ([]byte, error) {
 	parts := make([][]byte, len(inputs))
 	for i, in := range inputs {
-		src, err := os.ReadFile(in)
+		src, err := readInput(in, stdin)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", in, err)
+			return nil, err
 		}
 		if len(inputs) > 1 {
 			src = RewriteRelativeImagePaths(src, filepath.Dir(in))
@@ -31,6 +34,23 @@ func Inputs(inputs []string) ([]byte, error) {
 		parts[i] = bytes.TrimRight(src, "\n")
 	}
 	return bytes.Join(parts, []byte("\n\n")), nil
+}
+
+// readInput returns the bytes of one input: stdin when in is "-", otherwise
+// the named file.
+func readInput(in string, stdin io.Reader) ([]byte, error) {
+	if in == "-" {
+		src, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read stdin: %w", err)
+		}
+		return src, nil
+	}
+	src, err := os.ReadFile(in)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", in, err)
+	}
+	return src, nil
 }
 
 // mdImageRe matches a markdown image reference, capturing its opening

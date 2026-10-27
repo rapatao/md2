@@ -2,7 +2,13 @@ package chrome
 
 import (
 	"errors"
+	"fmt"
+	"image"
+	_ "image/png"
+	"strings"
 	"testing"
+
+	htmlconv "github.com/rapatao/md2/internal/converter/html"
 )
 
 // fakeBrowser records whether Get was called and returns a canned result.
@@ -73,5 +79,93 @@ func TestDownloadBrowserConsentError(t *testing.T) {
 	}
 	if fb.called {
 		t.Error("Get must not be called when consent errors")
+	}
+}
+
+func TestCaptureScale(t *testing.T) {
+	for _, tc := range []struct {
+		w, h float64
+		want float64
+	}{
+		{800, 600, diagramScale},                          // fits at full scale
+		{maxCaptureSide / diagramScale, 10, diagramScale}, // exactly the limit
+		{maxCaptureSide, 10, 1},                           // too wide: scale down
+		{10, maxCaptureSide * 2, 0.5},                     // too tall: scale down
+	} {
+		if got := captureScale(tc.w, tc.h); got != tc.want {
+			t.Errorf("captureScale(%v, %v) = %v, want %v", tc.w, tc.h, got, tc.want)
+		}
+	}
+}
+
+func TestViewportDim(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want int
+	}{{0, 1}, {-5, 1}, {10.2, 11}, {maxDiagramViewport + 1, maxDiagramViewport}} {
+		if got := viewportDim(tc.in); got != tc.want {
+			t.Errorf("viewportDim(%v) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A diagram far wider than the browser window must be snapshotted at (near) its
+// own size, not squeezed into the window and cut off at the clip edge.
+func TestRenderDiagramPNGKeepsWideDiagramWhole(t *testing.T) {
+	if _, has := lookPath(); !has {
+		t.Skip("no browser installed")
+	}
+
+	var src strings.Builder
+	src.WriteString("flowchart LR\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&src, "  A%d[Node %d long label text] --> A%d[Node %d long label text]\n", i, i, i+1, i+1)
+	}
+
+	png, err := RenderDiagramPNG([]byte(src.String()), "mermaid")
+	if err != nil {
+		t.Fatalf("render diagram: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(strings.NewReader(string(png)))
+	if err != nil {
+		t.Fatalf("decode png: %v", err)
+	}
+	// The diagram is ~9000 CSS px wide; a window-sized capture would be ~2400 px
+	// across (and a few px tall) at diagramScale.
+	if want := maxDiagramViewport; cfg.Width < want {
+		t.Errorf("snapshot is %dx%d, want at least %d px wide", cfg.Width, cfg.Height, want)
+	}
+}
+
+// -flatten must leave the drawn diagram in the document as vector SVG, with the
+// mermaid library dropped — the PDF path's mechanism, nothing snapshotted.
+func TestFlattenDiagramsKeepsRenderedSVG(t *testing.T) {
+	if _, has := lookPath(); !has {
+		t.Skip("no browser installed")
+	}
+
+	if err := htmlconv.EnableDiagrams([]string{"mermaid"}); err != nil {
+		t.Fatalf("enable mermaid: %v", err)
+	}
+	defer func() { _ = htmlconv.EnableDiagrams(nil) }()
+
+	doc, err := htmlconv.Render([]byte("# Doc\n\n```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```\n"))
+	if err != nil {
+		t.Fatalf("render html: %v", err)
+	}
+	out, err := FlattenDiagrams(doc)
+	if err != nil {
+		t.Fatalf("flatten: %v", err)
+	}
+
+	got := string(out)
+	if !strings.Contains(got, "<svg") {
+		t.Error("flattened document has no rendered <svg>")
+	}
+	if strings.Contains(got, "<script") {
+		t.Error("flattened document still carries a <script> (mermaid library not dropped)")
+	}
+	if strings.Contains(got, "data:image/png") {
+		t.Error("flattened document rasterized a diagram; it should keep the SVG")
 	}
 }

@@ -199,6 +199,13 @@ nix:
       owner: rapatao
       name: nur-packages
       token: "{{ .Env.GH_RELEASE_TOKEN }}"
+      branch: "update/md2-{{ .Version }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: rapatao
+          name: nur-packages
+          branch: main
     path: pkgs/md2/default.nix
     homepage: "https://github.com/rapatao/md2"
     description: "Convert markdown files to PDF, HTML, and text"

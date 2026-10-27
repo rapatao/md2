@@ -90,6 +90,10 @@ func TestRenderTableCells(t *testing.T) {
 	if !strings.Contains(got, "a | b") || !strings.Contains(got, "1 | 2") {
 		t.Errorf("table cells not rendered: %q", got)
 	}
+	// A dashed separator sits between the header and body rows.
+	if !strings.Contains(got, "a | b\n-----\n1 | 2") {
+		t.Errorf("header separator missing: %q", got)
+	}
 }
 
 func TestRenderEndsWithSingleNewline(t *testing.T) {

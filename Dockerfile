@@ -10,7 +10,7 @@
 # musl's edge cases. md2 is a static CGO_ENABLED=0 binary. Fonts cover the
 # emoji/CJK glyphs that trigger the browser fallback.
 #
-# The container runs as root on purpose: md2 launches Chromium via go-rod,
+# The container runs as root on purpose: md2 launches Chromium via chromedp,
 # which only adds --no-sandbox automatically when running as uid 0. Do not add
 # a nonroot USER or headless Chromium will fail to start.
 FROM debian:bookworm-slim

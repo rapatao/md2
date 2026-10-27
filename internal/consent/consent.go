@@ -22,7 +22,7 @@ func Policy(allowDownload bool) func() (bool, error) {
 		if !stdinIsTerminal() {
 			return false, nil
 		}
-		fmt.Fprint(os.Stderr, "No Chrome/Chromium found. Download Chromium (~150MB) to render the PDF? [y/N]: ")
+		fmt.Fprint(os.Stderr, "No Chrome/Chromium found. Download Chromium (~120MB) to render the PDF? [y/N]: ")
 		return Read(os.Stdin)
 	}
 }

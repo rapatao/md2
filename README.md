@@ -7,8 +7,10 @@ Convert markdown files to other formats. Pure Go by default, extensible to new o
 Currently supported:
 
 - **PDF** (`.pdf`) — syntax-highlighted code blocks
-- **HTML** (`.html`) — self-contained; local images embedded as data URIs; syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as static images with `-flatten`, e.g. for Google Docs import), or as inline SVG for D2 (rendered in-process, no browser)
+- **HTML** (`.html`) — self-contained; local images embedded as data URIs (and remote images too with `-flatten`); syntax-highlighted code blocks. Diagrams render via inlined mermaid.js (or as pre-drawn inline SVG with `-flatten`, no JS runtime needed), or as inline SVG for D2 (rendered in-process, no browser)
 - **Plain text** (`.txt`)
+- **EPUB** (`.epub`) — EPUB3 ebook (validates with epubcheck). Shares the HTML renderer, so syntax-highlighted code carries over, and the stylesheet has a `prefers-color-scheme: dark` variant for readers' dark mode. Diagrams (Mermaid, D2, PlantUML) are inlined as SVG in a **light and a dark theme**, toggled by the reader's color scheme, so they stay legible in both (Mermaid needs a browser at convert time, like the PDF diagram path). A navigation TOC is built from the document's headings; `dc:title`/`dc:creator` come from `-title`/`-author`. Local images are packaged into the archive
+- **DOCX** (`.docx`) — Word document, hand-built Office Open XML (pure Go, no new dependency). Named heading styles drive Word's Navigation pane / auto-TOC; native list numbering; GFM tables, blockquotes, thematic breaks; bold/italic/inline-code and hyperlinks; local images embedded as sized inline drawings; syntax-highlighted code as a bordered, shaded paragraph (chroma github theme). Diagrams (`-render`) are rasterized to embedded PNGs via a headless browser, falling back to a code block without one. Title/author metadata comes from `-title`/`-author`
 
 ## Install
 
@@ -110,24 +112,42 @@ sha256sum --ignore-missing -c checksums.txt
 md2 input.md                  # writes input.pdf (default format)
 md2 -f html input.md          # writes input.html
 md2 -f txt input.md           # writes input.txt (plain text)
+md2 -f epub input.md          # writes input.epub (EPUB3 ebook)
+md2 -f docx input.md          # writes input.docx (Word document)
+md2 -f epub -author "Jane Doe" -title "My Manual" input.md  # set title/author metadata (any format)
 md2 -f pdf,html input.md      # writes input.pdf and input.html
-md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams as images (Google Docs)
+md2 -f html -render mermaid -flatten input.md  # self-contained html, diagrams pre-drawn as svg
 md2 -f html -render plantuml input.md          # render plantuml diagrams via a PlantUML server
 md2 -f html -css extra.css input.md  # append custom CSS after the built-in stylesheet
 md2 -o report.pdf input.md    # explicit output (format from extension)
 md2 -f html -stdout input.md  # write html to stdout (no file), e.g. to pipe
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md  # merge files, in order, into one document
+md2 -f pdf -o manual.pdf docs/  # merge every docs/*.md, sorted, into one document
+md2 -f html -per-file docs/     # convert each docs/*.md to its own .html
+md2 -f pdf -o book.pdf -recursive docs/  # merge docs/ and its sub-folders
+curl -s https://example.com/readme.md | md2 -f html -o out.html -  # read markdown from stdin
 ```
+
+Pass `-` as the input to read markdown from stdin (the symmetric complement to
+`-stdout`). Because `flag` stops parsing at the first non-flag argument, put
+`-o`/`-f` **before** the `-`. Stdin has no source directory, so an explicit
+`-o` (or `-stdout`) is required, and relative image references resolve against
+the working directory.
 
 Flags:
 
-- `-o` output file. Default: (first) input name with the format extension. Cannot be combined with multiple formats.
+- `-o` output file. Default: the input's name with the format extension. Cannot be combined with multiple formats. **Required when merging multiple inputs** (several files, or a directory) into one document.
 - `-f` output format(s), comma-separated. Default: inferred from `-o` extension, else `pdf`. Duplicates are ignored.
 - `-render` diagram renderer(s) to enable, comma-separated (`mermaid`, `d2`, `plantuml`), or `all`. Default: none — diagrams render as plain code unless enabled.
-- `-flatten` (HTML only) flatten diagrams to static images instead of inlining mermaid.js, for a self-contained file with no JS runtime needed to view it (e.g. importing into Google Docs). Requires a browser.
+- `-flatten` (HTML only) draw diagrams once in a headless browser and keep the rendered inline SVG instead of inlining mermaid.js, **and** fetch remote `http(s)` images and embed them as data URIs, for a fully self-contained file with no JS runtime or external assets needed to view it (e.g. importing into Google Docs). Requires a browser for diagrams, and — new in this flag — **network access at convert time for any document that references remote images** (so a doc with remote images no longer converts in an airgapped/offline environment under `-flatten`). A remote image that can't be fetched is left as a live reference with a warning, not a hard failure.
+- `-user-agent` `User-Agent` header sent when `-flatten` fetches remote images to embed. Default: a browser-like string, since some hosts reject the default Go client UA. Override for hosts with specific requirements.
 - `-keep-diagram-source` keep the original diagram source in the output in addition to the rendered diagram: the rendered diagram is emitted first, immediately followed by the source as a code block. Default: off — a diagram replaces its source.
 - `-plantuml-server` base URL of the PlantUML server used to render `plantuml` diagrams to SVG at build time. Default: the public `https://www.plantuml.com/plantuml`. PlantUML has no pure-Go renderer, so md2 encodes the diagram source and fetches the rendered SVG from this server (inlining it, so the output stays self-contained). This means the diagram source is sent to the server over the network — point it at a self-hosted server for offline or private use.
 - `-css` (HTML output and the browser-rendered PDF fallback only — **not** the pure-Go PDF path) path to a CSS file whose contents are appended after the built-in stylesheet, so it can override or extend the defaults via normal CSS cascade rules. Local `@import`s inside it are resolved and inlined recursively (relative to the importing file's directory), so the output stays self-contained; remote `@import url(https://...)`s are left as-is for the browser to fetch. Since the pure-Go PDF renderer has no CSS support, passing `-css` with `-f pdf` forces the headless-browser engine, requiring a browser.
+- `-per-file` with multiple inputs (several files, or a directory) convert each to its own output next to its source instead of merging into one document. Cannot be combined with `-o`/`-stdout` (which name a single destination).
+- `-recursive` when the input is a directory, also pick up `.md` files in sub-directories, ordered folder by folder (a folder's own files first, then its sub-folders). Default: top-level `*.md` only.
+- `-author` document author metadata: EPUB `dc:creator`, HTML `<meta name="author">`, PDF author.
+- `-title` document title metadata (EPUB `dc:title`, HTML `<title>`, PDF title); defaults to the document's first heading.
 - `-stdout` write the converted result to standard output instead of a file, for piping into other tools. Single format only. With `-o` it also writes the file.
 - `-allow-download` authorize downloading Chromium for the browser renderer without prompting (useful in CI).
 - `-version` print the version and exit.
@@ -144,10 +164,10 @@ PDF uses a two-stage strategy:
    styled HTML version to PDF with Chrome/Chromium for full fidelity.
 
 The fallback prefers a browser already installed on the system. If none is
-found it asks before downloading Chromium (~150MB, cached for later runs):
+found it asks before downloading Chromium (~120MB, Chrome for Testing's `chrome-headless-shell`, cached for later runs):
 
 ```
-No Chrome/Chromium found. Download Chromium (~150MB) to render the PDF? [y/N]:
+No Chrome/Chromium found. Download Chromium (~120MB) to render the PDF? [y/N]:
 ```
 
 On a non-interactive terminal it declines unless `-allow-download` is passed.
@@ -179,26 +199,36 @@ graph TD; A-->B;
 ```d2
 x -> y
 ```
+
+```plantuml
+Alice -> Bob: hello
+```
 ````
 
 ```sh
 md2 -f html -render mermaid input.md            # enable mermaid (interactive)
-md2 -f html -render mermaid -flatten input.md   # diagrams as static images
+md2 -f html -render mermaid -flatten input.md   # diagrams pre-drawn as static svg
 md2 -f html -render d2      input.md            # enable D2 (inline SVG)
+md2 -f html -render plantuml input.md           # enable PlantUML (server-rendered SVG)
 md2 -f pdf  -render all     input.md            # enable every supported renderer
 md2 -f html -render mermaid -keep-diagram-source input.md  # rendered diagram + its source
 ```
 
-Two renderers are supported, with different rendering models:
+Three renderers are supported, with different rendering models:
 
 - **`mermaid`** renders *client-side*. In **HTML**, the
   [mermaid](https://mermaid.js.org) library is inlined into the output (no
   network access needed to view it) and the block renders to SVG in the browser
   — interactive, but needing a JS runtime to display. With `-flatten`, md2
-  renders the document in a headless browser and replaces each diagram with a
-  static PNG image, producing a self-contained file that displays anywhere —
-  including a Google Docs import (upload the `.html` to Drive, then
-  "Open with > Google Docs"), which runs no JavaScript. In **PDF**, a mermaid
+  draws the document once in a headless browser and keeps each diagram as the
+  rendered inline SVG (the same mechanism the PDF path uses), dropping the
+  library: a static file that displays with no JavaScript, at any zoom. Note
+  that a Google Docs import (upload the `.html` to Drive, then "Open with >
+  Google Docs") does not render inline SVG — use `-f docx`, which embeds
+  diagrams as PNGs, for that route. `-flatten` also fetches
+  any remote `http(s)` images and embeds them as data URIs (needing network
+  access at convert time), so the output has no external asset dependencies at
+  all. In **PDF**, a mermaid
   block forces the headless-browser engine (the pure-Go renderer cannot run
   JavaScript), so the diagram is captured as vector graphics. Inlining the
   library adds ~3 MB to each HTML file that contains a mermaid diagram;
@@ -210,6 +240,15 @@ Two renderers are supported, with different rendering models:
   rasterize SVG, a d2 block routes through the headless-browser engine like
   mermaid. A d2 block whose source fails to compile is left as a plain code block
   (with a warning on stderr) rather than failing the conversion.
+- **`plantuml`** ([PlantUML](https://plantuml.com)) renders *at conversion time*
+  by sending the encoded diagram source to a PlantUML server (public by default,
+  or a self-hosted one via `-plantuml-server`) and inlining the returned SVG, so
+  the output stays self-contained. PlantUML has no pure-Go renderer, so this is
+  the one renderer that reaches over the network — point `-plantuml-server` at a
+  private instance for offline or confidential diagrams. In **HTML** the SVG is
+  embedded inline (no browser); in **PDF** the block routes through the
+  headless-browser engine, as with mermaid and d2, since the pure-Go PDF renderer
+  cannot rasterize SVG.
 
 By default a rendered diagram replaces its source. Pass `-keep-diagram-source`
 to keep both: the rendered diagram is emitted first, immediately followed by the
@@ -218,8 +257,8 @@ original source as a code block.
 In **plain text** output, diagrams are not rendered — the source is kept as code.
 Files without a diagram are unaffected by any of the above.
 
-The `-render` flag is designed to take additional renderers (e.g. `plantuml`) in
-the future.
+The `-render` flag accepts any combination of the supported renderers, or `all`
+to enable every one, and is designed to take additional renderers in the future.
 
 ### Output naming
 
@@ -230,7 +269,8 @@ extension for the format — `docs/report.md` with `-f pdf,html` produces
 ### Multiple inputs
 
 Pass more than one markdown file to merge them, in the order given, into a
-single output document:
+single output document. Merging has no obvious output name, so `-o` (or
+`-stdout`) is **required**:
 
 ```sh
 md2 -f pdf -o book.pdf intro.md chapter1.md chapter2.md
@@ -241,16 +281,42 @@ the first non-flag argument, so `-o`/`-f` cannot follow the file list. Files
 are concatenated with a blank line between them (so the last line of one file
 never merges into the first line of the next); heading levels are used as-is,
 with no automatic page or section break inserted. Each file's relative image
-references resolve against its own directory. When `-o` is omitted, the
-merged output takes the *first* input's base name.
+references resolve against its own directory.
+
+Pass `-per-file` instead to convert each input to its own output next to its
+source, rather than merging:
+
+```sh
+md2 -f html -per-file intro.md chapter1.md   # writes intro.html and chapter1.html
+```
+
+### Directory input
+
+Give a directory as the input to pick up the `.md` files inside it. The same
+merge-vs-split rules apply: `-o` merges every file into one document,
+`-per-file` converts each to its own output:
+
+```sh
+md2 -f pdf -o manual.pdf docs/   # merge all docs/*.md, sorted, into one PDF
+md2 -f html -per-file docs/      # one .html per .md, next to each source
+```
+
+Files are picked up top-level only by default; add `-recursive` to descend into
+sub-directories. They are ordered **folder by folder** — a folder's own files
+first (sorted by name), then each sub-folder in turn, recursively — so naming
+files `01-intro.md`, `02-setup.md` gives a predictable merge order. A directory
+with no `.md` files is an error. The input must be *either* a single directory
+*or* a list of files, not a mix.
 
 ## Supported formats
 
 | Format | Extension | Engine |
 |--------|-----------|--------|
-| `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (go-rod) |
-| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, static PNGs via go-rod) or in-process D2 inline SVG |
+| `pdf`  | `.pdf`    | goldmark-pdf (pure Go), browser fallback (chromedp) |
+| `html` | `.html`   | goldmark (GFM), styled standalone document; local images embedded as data URIs; diagrams as mermaid.js (or, with `-flatten`, pre-drawn inline SVG via chromedp) or in-process D2 inline SVG |
 | `txt`  | `.txt`    | goldmark AST walker, markup stripped, structure kept |
+| `epub` | `.epub`   | stdlib `archive/zip` EPUB3 container (pure Go); chapter shares the HTML pipeline; per-heading nested TOC; local images packaged; light/dark diagram variants |
+| `docx` | `.docx`   | stdlib `archive/zip` OOXML package (pure Go); goldmark AST → WordprocessingML; named heading styles (Navigation pane), native list numbering, tables, syntax-highlighted code in a bordered box (chroma `github` colors as run colors), local images embedded; enabled diagrams (`-render`) rasterized to embedded PNGs via headless browser |
 
 ## Adding a format
 
@@ -258,8 +324,8 @@ Each format lives in its own package under `internal/converter/`. Create a new
 one that implements `converter.Converter` and registers itself in an `init`:
 
 ```go
-// internal/converter/docx/docx.go
-package docx
+// internal/converter/rtf/rtf.go
+package rtf
 
 import "github.com/rapatao/md2/internal/converter"
 
@@ -267,33 +333,45 @@ type Converter struct{}
 
 func (Converter) Convert(src []byte, w io.Writer) error { /* ... */ }
 
-func init() { converter.Register("docx", Converter{}) }
+func init() { converter.Register("rtf", Converter{}) }
 ```
 
-Then blank-import the package in `main.go` so its `init` runs:
+Then blank-import the package in `internal/cli/cli.go` so its `init` runs:
 
 ```go
-_ "github.com/rapatao/md2/internal/converter/docx"
+_ "github.com/rapatao/md2/internal/converter/rtf"
 ```
 
 The CLI picks it up automatically — no other changes. It then works standalone
-(`-f docx`) and in any comma list (`-f pdf,docx`).
+(`-f rtf`) and in any comma list (`-f pdf,rtf`). See `internal/converter/docx`
+for a worked example that hand-builds an OOXML zip with the standard library.
 
 ## Layout
 
 ```
-main.go                       CLI entry: arg parsing, format resolution, I/O
-                              (blank-imports each format package)
-flags.go                      flag set
-main_test.go                  parseFormats + run end-to-end tests
+main.go                       thin entry point: resolve version, call cli.Run
+internal/cli/
+  cli.go                      arg parsing, format/render resolution, I/O orchestration
+  flags.go                    flag set definition
 internal/converter/
   converter.go                Converter interface + format registry
-  converter_test.go           registry tests
   pdf/pdf.go                  markdown -> PDF: pure-Go first, browser fallback
   html/html.go                markdown -> styled HTML document (+ Render helper)
+  html/d2.go                  D2 diagrams -> inline SVG (in-process, pure Go)
+  html/plantuml.go            PlantUML diagrams -> inline SVG (via PlantUML server)
+  html/assets/                bundled mermaid.min.js inlined into HTML output
   text/text.go                markdown -> plain text (AST walker)
-  chrome/chrome.go            HTML -> PDF via headless browser (go-rod)
+  epub/epub.go                markdown -> EPUB3 ebook (stdlib archive/zip)
+  docx/docx.go                markdown -> Word .docx (OOXML, stdlib archive/zip)
+  chrome/chrome.go            HTML -> PDF / diagram capture via headless browser (chromedp)
+  chrome/browser.go           find an installed browser, or download chrome-headless-shell (with consent)
+internal/css/                 -css load, @import inlining, append to stylesheet
+internal/merge/               concatenate multiple input files into one document
+internal/urlref/              classify image/link references as local paths vs URLs
+internal/consent/             interactive prompt gating the Chromium download
 ```
+
+Each package has a matching `*_test.go` alongside it.
 
 ## Test
 

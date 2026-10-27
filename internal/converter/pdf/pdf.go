@@ -83,8 +83,12 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 	// goldmark-pdf measures table column widths before it sets any font, so a
 	// document that opens with a table panics inside gofpdf (no current font).
 	// Build the Fpdf ourselves and pre-set a core font to avoid that.
-	doc := gpdf.NewFpdf(ctx, gpdf.FpdfConfig{}, nil)
+	doc := gpdf.NewFpdf(ctx, gpdf.FpdfConfig{Title: htmlconv.DocumentTitle(src)}, nil)
 	doc.Fpdf.SetFont("Helvetica", "", 12)
+	// goldmark-pdf's config has no Author field; set it on the underlying fpdf.
+	if htmlconv.Author != "" {
+		doc.Fpdf.SetAuthor(htmlconv.Author, true)
+	}
 
 	opts := []gpdf.Option{
 		gpdf.WithContext(ctx),
@@ -93,6 +97,9 @@ func renderPureGo(src []byte, srcPath string, w io.Writer) (err error) {
 		// path uses, rather than goldmark-pdf's default "monokai", so output is
 		// consistent across the pure-Go and browser-rendered paths.
 		gpdf.WithCodeBlockTheme(styles.Get("github")),
+		// goldmark-pdf escapes HTML by default, which prints entities like
+		// &quot; literally since a PDF has no HTML layer to decode them.
+		gpdf.WithEscapeHTML(false),
 	}
 	// goldmark-pdf defaults ImageFS to the process's CWD, so relative images
 	// only resolve when md2 happens to run from the input file's directory.
